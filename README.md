@@ -1,0 +1,238 @@
+# TTS READER — read FB2, FB2.ZIP, and TXT books aloud
+
+```bash
+tts book.fb2
+tts 4 -s 2.3 book.fb2.zip
+tts notes.txt 9
+tts -l en-GB notes.txt 7
+tts --help
+```
+
+Pass a file and, if needed, a mode number. Their order does not matter.
+Mode 1 is the default. For a file named after a number, use a path such as `./9`.
+Help shows engines, the player, and the converter found on this computer. These
+are local checks; an installed client does not mean its service is reachable.
+
+| Female mode | Male mode | Engine |
+| --- | --- | --- |
+| 1 | 2 | RHVoice; Anna / Aleksandr for Russian |
+| 3 | 4 | Microsoft Edge TTS |
+| 5 | 6 | Silero |
+| 7 | 8 | Piper |
+| 9 | — | Free Google Translate TTS |
+
+Google Translate uses mode 9 and does not let clients select gender.
+No Google Cloud account is needed. The
+built-in client uses the public speech RPC used by
+[gTTS](https://github.com/pndurette/gTTS); no extra package is required.
+It sends text to Google. Edge sends text to Microsoft. Both need internet.
+
+## Playback
+
+Space pauses or resumes. `]` speeds up, `[` slows down, and `q` or `Ctrl+C` quits.
+Run `tts` in an interactive terminal to use the keys. Set the initial speed with
+`-s NUMBER`: `-s 2.3` plays at 2.3 times the normal speed; `-s 0.8` slows down.
+The accepted range is 0.01 to 100, with 1 as the default. Keyboard speed controls
+continue to work after setting the initial speed.
+
+RHVoice synthesizes the whole book as one continuous utterance. Its native stream
+passes through ffmpeg to normalize the audio. All engines feed one continuous
+24 kHz mono PCM stream to mpv; the player never restarts between pieces.
+
+The initial buffer holds eight seconds at the chosen playback speed: at 2.3x it
+holds 18.4 seconds of source audio. The producer queue holds about twice that
+amount. Keyboard speed changes also update the queue target. mpv adds its own
+cache. The reader reports slow synthesis; buffering cannot overcome a service
+that stays slower than playback.
+
+Synthesis runs in a separate process. `q` and `Ctrl+C` stop that process and its
+children, including active downloads, model inference, and ffmpeg. Temporary
+files from the stopped worker are removed.
+
+The reader automatically resumes from the last played audio position after `q`,
+`Ctrl+C`, or a failure. It records playback time rather than queued audio. A changed
+book, language, mode, or voice/model identity starts a new reading position.
+Bookmarks are removed when reading finishes. To start at the beginning:
+
+```bash
+TTS_RESUME=0 ./tts book.fb2
+```
+
+Generated PCM is cached under `TTS_CACHE_DIR/pcm`, with a default limit of 256 MiB.
+Keys include text, language, voice, model fingerprint, and PCM format. Cached data
+has a size and checksum; corrupt entries are regenerated. Online speech expires
+from lookup after a day because these services do not expose model revisions.
+RHVoice uses complete-book cache manifests when all blocks are still available;
+otherwise it regenerates one native stream and skips the played prefix on resume.
+Audio is not saved next to the book.
+
+Google speech requests are limited to 100 characters, following the limit used
+by gTTS. Each short sentence is sent whole, with closing quotes attached. Long
+sentences split at clause punctuation first and word boundaries only when needed.
+Abbreviations, initials, decimal numbers, and CJK sentence endings are handled.
+All engines share the same sentence detector with language-specific abbreviations.
+Other engines use an 800-character bound. Each Google request's MP3 is
+decoded separately before its PCM enters the continuous playback stream.
+
+## Language and voices
+
+FB2 and FB2.ZIP use `description/title-info/lang`. XML `encoding` sets the text
+encoding, not its language. Only TXT, FB2, and FB2.ZIP are accepted. A ZIP must contain exactly one FB2.
+Input files and uncompressed ZIP members are limited to 64 MiB by default;
+set `TTS_MAX_BOOK_BYTES` to change the byte limit. XML is parsed incrementally,
+with consumed elements removed from the tree. The extracted book text remains
+in memory within that limit. The reader includes
+body text and notes without XML markup or images.
+
+ISO two-letter and three-letter codes are accepted. Regions and scripts are kept:
+`eng-US` becomes `en-US`, and `zh_Hant` becomes `zh-Hant`. Exact locales are preferred
+when the engine provides them. Contradictory script tags are rejected, including
+Serbian Latin/Cyrillic and Chinese Simplified/Traditional. Regional fallbacks are
+reported. Piper ranks installed voices alongside the cached or downloaded catalog. Plain text and missing FB2 language metadata default
+to Russian; use `-l LANGUAGE` to set another language or override FB2 metadata.
+TXT supports UTF-8, UTF-16 with a BOM, and Windows-1251.
+
+Each engine uses its own voices for the requested language. The script never
+substitutes a Russian voice or switches engines to hide a missing language.
+
+- **RHVoice:** reads installed `voice.info` files and matches language and gender.
+  The system `iso-codes` database maps language names and ISO codes. Install RHVoice
+  voice packages for additional languages.
+- **Edge:** reads Microsoft's voice list and matches language, locale, and gender.
+- **Silero:** selects models for English, German, Spanish, French, Ukrainian, Uzbek,
+  Russian, Indic languages, and the languages in the Cyrillic model. It also reads
+  the upstream index for further language models. Models download once. English
+  defaults to the English Indic model, whose voices have an Indian accent. Indic
+  input is romanized using `aksharamukha` before synthesis.
+- **Piper:** reads language metadata from local ONNX configs. When a suitable model
+  is missing, it selects and downloads one from the upstream catalog. Single and
+  multi-speaker models are supported. Downloads check the supplied size and hash.
+- **Google:** maps the book language to a Google Translate speech language, including
+  Chinese script variants and supported regional variants.
+
+The engines have different language and gender coverage. A missing language is an
+error. A known voice of the opposite gender is never selected. Some Silero/Piper
+catalogs omit gender metadata; an unlabelled voice can be used with an explicit
+message that gender is unknown. Set `TTS_STRICT_GENDER=1` to reject such voices.
+Spanish and French indexed Silero voices have no gender labels in the upstream
+catalog. Use a voice override if you have verified their gender.
+
+Sources: [Silero models and speakers](https://github.com/snakers4/silero-models),
+[Piper voices](https://huggingface.co/rhasspy/piper-voices).
+
+## Setup and configuration
+
+Required: Python 3.10 or newer, mpv, and ffmpeg on Linux.
+Install only the dependencies for the engines you use:
+
+```bash
+python3 -m pip install ".[edge]"          # Edge
+python3 -m pip install ".[silero]"        # Silero
+python3 -m pip install ".[silero,indic]"  # Silero Indic voices
+```
+
+RHVoice needs `RHVoice-test` and voice packages. Piper needs its executable;
+`~/piper/piper/piper` is also searched. Google uses Python's standard library.
+
+| Variable | Purpose |
+| --- | --- |
+| `TTS_RHVOICE_VOICES` | RHVoice voice directory |
+| `TTS_PIPER_VOICES` | Local Piper model directory |
+| `TTS_CACHE_DIR` | Model, catalog, audio, and bookmark cache; default `~/.cache/tts` |
+| `TTS_PIPER_INDEX` | A local Piper voice catalog JSON file |
+| `TTS_SILERO_INDEX` | A local Silero model catalog YAML file |
+| `TTS_VOICE_CONFIG` | Voice overrides; default `~/.config/tts/voices.json` |
+| `TTS_STRICT_GENDER` | Set to `1` to require known voice gender |
+| `TTS_NETWORK_TIMEOUT` | Per-attempt network timeout in seconds; default `60` |
+| `TTS_BUFFER_SECONDS` | Startup buffer in playback seconds; default `8`, maximum `120` |
+| `TTS_PCM_CACHE_MB` | PCM cache size in MiB; default `256`; `0` disables writes |
+| `TTS_MAX_BOOK_BYTES` | Maximum file or uncompressed member size; default `67108864` |
+| `TTS_RESUME` | `1` resumes automatically (default); `0` starts at the beginning |
+| `TTS_PIPER_REVISION` | Piper catalog/model repository revision; default `main` |
+| `TTS_SILERO_REVISION` | Extra Silero catalog repository revision; default `master` |
+
+Online requests and downloads retry up to four times for connection errors,
+timeouts, HTTP 429, and temporary server errors. Backoff is bounded and honors
+`Retry-After` up to 60 seconds. Already-generated audio drains before a final
+synthesis error is reported.
+
+Model downloads use temporary files and atomic renames. Empty responses,
+`Content-Length` mismatches, and supplied size/checksum mismatches are rejected.
+Silero packages must load successfully before a downloaded candidate is committed.
+Invalid cached packages are removed and downloaded again. Silero overrides can
+supply `size_bytes`, `md5_digest`, or `sha256_digest`. Use an immutable model URL
+and expected checksum, plus pinned catalog revisions, for reproducible local voices.
+Remote Edge/Google voices cannot be pinned to a public model revision.
+
+Voice overrides add languages, verified genders, or private models:
+
+```json
+{
+  "rhvoice": {"en": {"female": {"name": "Slt"}}},
+  "edge": {"en-GB": {"female": {"name": "en-GB-SoniaNeural"}}},
+  "piper": {
+    "en-US": {"female": {"path": "/path/to/en_US-lessac-medium.onnx"}}
+  },
+  "silero": {
+    "en": {"female": {
+      "model": "v3_en_indic",
+      "speaker": "tamil_female",
+      "url": "https://models.silero.ai/models/tts/en/v3_en_indic.pt",
+      "sample_rate": 24000
+    }}
+  }
+}
+```
+
+The project wrapper resolves its own directory. No installation or change to
+`~/bin` is needed. Installing the package creates the `tts` console entry point
+in the chosen Python environment; use a virtual environment if desired.
+
+Run directly from this project:
+
+```bash
+./tts -h
+./tts 9 -s 2.3 book.fb2.zip
+python3 tts.py book.fb2
+```
+
+## Tests
+
+```bash
+python3 -m unittest -v
+```
+
+Install the Edge and Silero extras to run their unit tests. Playback tests need
+mpv and ffmpeg; native playback tests also need RHVoice and its Russian voices.
+
+Offline tests cover voice selection, ISO codes, regions, scripts, Google RPC
+responses, corrupt downloads and caches, retries, streamed XML, queue duration,
+worker cancellation, and reading-position recovery. Real mpv runs in a pseudoterminal
+with `--ao=null`; the test presses Space, `[`/`]`, and `q` and checks that two PCM
+blocks have one `start-file` and no `end-file` between them. Additional PTY tests quit while preparing audio and check native RHVoice
+playback, pause, cancellation, and resume. Non-English text in
+test fixtures is data used to check encodings and synthesis.
+
+Real network synthesis tests check audio decoding, duration, and signal level:
+
+```bash
+python3 integration_tests.py --engine rhvoice
+python3 integration_tests.py --engine piper
+python3 integration_tests.py --engine edge
+python3 integration_tests.py --engine silero
+python3 integration_tests.py --engine google
+python3 integration_tests.py --engine all --timeout 30
+```
+
+These use real services/models, have a process deadline, and fail if a dependency
+or service is unavailable. Their default model cache is `.cache/` in this project;
+`TTS_CACHE_DIR` overrides it. They do not play sound on speakers.
+
+## Modules
+
+`tts.py` handles the CLI. `tts_books.py` parses input; `tts_text.py` splits sentences;
+`tts_engines.py` selects and runs engines; `tts_voices.py` manages catalogs and model
+downloads. `tts_config.py` and `tts_network.py` hold shared configuration and retry
+rules. `tts_worker.py` produces PCM in an interruptible process; `tts_pipeline.py`
+buffers it and saves positions; `tts_playback.py` controls mpv; `tts_state.py` manages
+the PCM cache and bookmarks. No module imports helpers from the CLI.

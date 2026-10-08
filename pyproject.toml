@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tts-reader"
+version = "0.2.0"
+description = "Read TXT and FB2 books aloud with interactive mpv playback"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+edge = ["edge-tts>=7,<8"]
+silero = ["torch>=2,<3", "numpy>=1.24,<3", "PyYAML>=6,<7"]
+indic = ["aksharamukha>=2,<3"]
+dev = ["ruff>=0.12"]
+
+[project.scripts]
+tts = "tts:main"
+
+[tool.setuptools]
+py-modules = ["tts", "tts_books", "tts_config", "tts_engines", "tts_google", "tts_network", "tts_pipeline", "tts_playback", "tts_state", "tts_text", "tts_voices", "tts_worker"]

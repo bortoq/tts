@@ -1,0 +1,11 @@
+__pycache__/
+.cache/
+*.pyc
+.ruff_cache/
+build/
+*.egg-info/
+dist/
+.agents/
+.codex/
+.aws/
+*.bundle
