@@ -1,1 +1,0 @@
-Command-line book reader with multilingual TTS, interactive mpv playback, caching, and resume.
