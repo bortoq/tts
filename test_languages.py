@@ -54,7 +54,7 @@ class LanguageTests(unittest.TestCase):
         for args in (["-l", "en_GB", "9", str(source)],
                      [str(source), "-l", "en_GB", "9"],
                      [str(source), "9", "-l", "en_GB"]):
-            self.assertEqual(tts.parse_args(args), (source, 9, "en-GB", 1.0))
+            self.assertEqual(tts.parse_args(args), (source, 9, "en-GB", None))
 
     def test_language_override_changes_the_voice_request(self):
         source = self.directory / "notes.txt"

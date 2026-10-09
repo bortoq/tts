@@ -101,6 +101,31 @@ except tts.PlaybackStopped:
                 self.assertAlmostEqual(property_value("speed"), 2.3)
                 os.write(terminal, b" ")
                 wait_for(lambda: property_value("pause") is True, "pause on Space")
+                terminal_output = bytearray()
+                def terminal_contains(text):
+                    while select.select([terminal], [], [], 0)[0]:
+                        try:
+                            terminal_output.extend(os.read(terminal, 65536))
+                        except OSError:
+                            break
+                    return text in terminal_output
+                terminal_contains(b'Audio:')
+                self.assertNotIn(b'Audio:', terminal_output)
+                self.assertNotIn(b'Audio --aid=', terminal_output)
+                self.assertNotIn(b'AO: [', terminal_output)
+                self.assertNotIn(b'Reading from stdin', terminal_output)
+                terminal_output.clear()
+                os.write(terminal, b'\x09')  # Ctrl+I / Tab
+                wait_for(lambda: terminal_contains(b'Audio:'), 'show information on Ctrl+I')
+                self.assertIn(b'pcm_s16le', terminal_output)
+                os.write(terminal, b'\x09')  # Close stats before checking the normal status line.
+                terminal_output.clear()
+                os.write(terminal, b'\x0f')  # Ctrl+O
+                wait_for(lambda: property_value('osd-level') == 3, 'toggle OSD on Ctrl+O')
+                try:
+                    wait_for(lambda: terminal_contains(b'A:'), 'keep the native mpv status visible')
+                except AssertionError:
+                    self.fail('Native status output: ' + terminal_output.decode(errors='replace'))
                 before = property_value("time-pos")
                 time.sleep(0.2)
                 self.assertAlmostEqual(property_value("time-pos"), before, delta=0.05)

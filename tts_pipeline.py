@@ -1,4 +1,5 @@
 """Duration-based buffering, cancellation, and resumable playback."""
+from bisect import bisect_right
 from collections import deque
 import json
 import os
@@ -7,11 +8,10 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 
 from tts_playback import MpvPlayer
 from tts_state import Bookmark, atomic_write
-from tts_config import BYTES_PER_SECOND
+from tts_config import BYTES_PER_SECOND, MODES
 from tts_voices import cache_dir
 
 
@@ -22,12 +22,68 @@ def buffer_seconds(speed):
     return seconds * speed
 
 
+class StartupIndicator:
+    """Show preparation progress until the first audio is ready for mpv."""
+    def __init__(self, directory, mode, speed):
+        self.directory, self.speed = directory, speed
+        self.engine, _, self.voice = MODES[mode]
+        self.stop = threading.Event()
+        self.thread = None
+        self.finished = False
+        self.terminal = sys.stderr.isatty()
+
+    def label(self):
+        try:
+            voice = json.loads((self.directory / 'voice.json').read_text())
+            self.engine = voice.get('engine', self.engine)
+            self.voice = voice.get('name', self.voice)
+        except (OSError, ValueError):
+            pass
+        return f'{self.engine}: {self.voice}; {self.speed:g}x.'
+
+    def _run(self):
+        frames = ('|', '/', '-', '\\')
+        index = 0
+        label = self.label()
+        print(label + ' ', end='', file=sys.stderr, flush=True)
+        while not self.stop.is_set():
+            updated = self.label()
+            if updated != label:
+                label = updated
+                prefix = '\r' + label + ' '
+            else:
+                prefix = '\b' if index else ''
+            print(prefix + frames[index % len(frames)] + '\x1b[K', end='',
+                  file=sys.stderr, flush=True)
+            index += 1
+            self.stop.wait(0.12)
+
+    def __enter__(self):
+        if self.terminal:
+            self.thread = threading.Thread(target=self._run, name='tts-startup')
+            self.thread.start()
+        else:
+            print(self.label(), file=sys.stderr, flush=True)
+        return self
+
+    def finish(self):
+        if self.finished:
+            return
+        self.finished = True
+        self.stop.set()
+        if self.thread:
+            self.thread.join()
+            print('\b \b', file=sys.stderr, flush=True)
+
+    def __exit__(self, *args):
+        self.finish()
+
+
 class AudioWorker:
     """A bounded queue in audio seconds, backed by a cancellable process group."""
     def __init__(self, directory, target, command=None, speed=1.0):
         self.directory, self.target = directory, target
         self.speed, self.wall_target = speed, target / speed
-        self.read_seconds, self.audio_seconds, self.rate_warned = 0, 0, False
         self.reader_error = None
         self.items, self.buffered = deque(), 0
         self.done, self.stopped = False, False
@@ -48,20 +104,10 @@ class AudioWorker:
                         self.condition.wait(0.1)
                     if self.stopped:
                         return
-                started = time.monotonic()
                 block = self.process.stdout.read(BYTES_PER_SECOND)
                 if not block:
                     break
                 with self.condition:
-                    if self.audio_seconds:
-                        self.read_seconds += time.monotonic() - started
-                    self.audio_seconds += len(block) / BYTES_PER_SECOND
-                    if not self.rate_warned and self.read_seconds > 2 and self.audio_seconds > 5:
-                        rate = max(0, self.audio_seconds - 1) / self.read_seconds
-                        if rate < self.speed:
-                            print(f'Synthesis produces {rate:.2f} audio seconds per second; '
-                                  f'playback speed is {self.speed:g}x.', file=sys.stderr)
-                            self.rate_warned = True
                     self.items.append(block)
                     self.buffered += len(block) / BYTES_PER_SECOND
                     self.condition.notify_all()
@@ -85,22 +131,15 @@ class AudioWorker:
             pass
 
     def prefill(self, player):
-        start = time.monotonic()
-        warned = False
         while True:
             player.ensure_running()
             self.update_speed()
             with self.condition:
                 if self.buffered >= self.target or self.done:
                     return
-                if not warned and time.monotonic() - start > self.wall_target * 2:
-                    print('Synthesis is slower than playback; waiting for the audio buffer.', file=sys.stderr)
-                    warned = True
                 self.condition.wait(0.1)
 
     def get(self, player):
-        waiting = time.monotonic()
-        warned = False
         while True:
             player.ensure_running()
             self.update_speed()
@@ -112,9 +151,6 @@ class AudioWorker:
                     return block
                 if self.done:
                     return None
-                if not warned and time.monotonic() - waiting > 1:
-                    print('Waiting for synthesis; consider a lower reading speed.', file=sys.stderr)
-                    warned = True
                 self.condition.wait(0.1)
 
     def result(self):
@@ -156,16 +192,46 @@ class PositionMonitor:
         self.directory, self.bookmark = directory, bookmark
         self.stop = threading.Event()
         self.completed_audio = None
+        self.timeline_offset = 0
+        self.segments = []
+        self.segment_starts = []
 
     def checkpoint(self):
         try:
             voice = json.loads((self.directory / 'voice.json').read_text())
-            if self.completed_audio is None:
+            try:
                 position = json.loads((self.directory / 'mpv-position.json').read_text())
+            except (OSError, ValueError):
+                position = {}
+            if self.completed_audio is None:
                 seconds = max(0, float(position['seconds']))
             else:
                 seconds = self.completed_audio
-            self.bookmark.save(voice['offset'] + seconds, voice['voice'])
+            cursor = None
+            timeline = self.directory / 'segments.jsonl'
+            if timeline.exists():
+                if timeline.stat().st_size < self.timeline_offset:
+                    self.timeline_offset = 0
+                    self.segments.clear()
+                    self.segment_starts.clear()
+                with timeline.open('rb') as stream:
+                    stream.seek(self.timeline_offset)
+                    while True:
+                        line = stream.readline()
+                        if not line.endswith(b'\n'):
+                            break  # Retry an incomplete append on the next checkpoint.
+                        segment = json.loads(line)
+                        self.segments.append(segment)
+                        self.segment_starts.append(segment['start'])
+                        self.timeline_offset = stream.tell()
+                index = bisect_right(self.segment_starts, seconds) - 1
+                if index >= 0:
+                    segment = self.segments[index]
+                    duration = segment['duration']
+                    fraction = min(1, max(0, (seconds - segment['start'] + segment['cut']) / duration))
+                    cursor = {'cursor': {'index': segment['index'], 'fraction': fraction,
+                        'layout': segment['layout'], **({'audio': segment['audio']} if 'audio' in segment else {})}}
+            self.bookmark.save(voice['offset'] + seconds, voice['voice'], position.get('speed'), position, **({'cursor': cursor} if cursor else {}))
         except (OSError, ValueError, KeyError, TypeError):
             pass
 
@@ -192,14 +258,17 @@ def read_aloud(path, mode, language, text, directory, speed):
     if resume not in ('0', '1'):
         raise ValueError('TTS_RESUME must be 0 or 1.')
     position = bookmark.read() if resume == '1' else {'seconds': 0, 'voice': ''}
+    speed = speed if speed is not None else position.get('speed', 1.0)
     atomic_write(directory / 'job.json', json.dumps({'text_file': str(source), 'mode': mode,
-                 'language': language, 'bookmark': position}).encode())
+                 'language': language, 'bookmark': position, 'speed': speed}).encode())
     monitor = PositionMonitor(directory, bookmark)
     try:
-        with MpvPlayer(directory, source=subprocess.PIPE, raw=True, speed=speed) as player:
+        with StartupIndicator(directory, mode, speed) as startup, \
+             MpvPlayer(directory, source=subprocess.PIPE, raw=True, speed=speed, state=position) as player:
             with monitor, AudioWorker(directory, buffer_seconds(speed), speed=speed) as worker:
                 worker.prefill(player)
                 block = worker.get(player)
+                startup.finish()
                 if block is None:
                     worker.result()
                 else:
@@ -216,4 +285,13 @@ def read_aloud(path, mode, language, text, directory, speed):
                     worker.result()
     finally:
         monitor.checkpoint()
+        try:
+            exit_state = json.loads((directory / 'mpv-exit.json').read_text())
+        except (OSError, ValueError):
+            exit_state = {}
+        if exit_state.get('remember_position') is False:
+            # Periodic checkpoints and mpv teardown may have saved the position.
+            # Reset it only after both have finished, retaining player settings.
+            saved = bookmark.read()
+            bookmark.save(0, saved['voice'], saved.get('speed'), saved)
     bookmark.clear()

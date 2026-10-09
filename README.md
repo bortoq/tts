@@ -32,8 +32,14 @@ It sends text to Google. Edge sends text to Microsoft. Both need internet.
 Space pauses or resumes. `]` speeds up, `[` slows down, and `q` or `Ctrl+C` quits.
 Run `tts` in an interactive terminal to use the keys. Set the initial speed with
 `-s NUMBER`: `-s 2.3` plays at 2.3 times the normal speed; `-s 0.8` slows down.
-The accepted range is 0.01 to 100, with 1 as the default. Keyboard speed controls
-continue to work after setting the initial speed.
+The accepted range is 0.01 to 100. When resuming, the last playback speed is
+restored, including when the same command contains `-s`; new readings start
+at the requested speed or 1 if omitted.
+Keyboard speed controls continue to work after setting the initial speed.
+During preparation, a spinner appears after the engine, voice, and speed line
+until the first audio is ready. mpv retains its normal terminal output.
+`I`, `Ctrl+I` (or Tab) toggles mpv's native information panel.
+`O` or `Ctrl+O` toggles mpv's playback status display.
 
 RHVoice synthesizes the whole book as one continuous utterance. Its native stream
 passes through ffmpeg to normalize the audio. All engines feed one continuous
@@ -42,15 +48,18 @@ passes through ffmpeg to normalize the audio. All engines feed one continuous
 The initial buffer holds eight seconds at the chosen playback speed: at 2.3x it
 holds 18.4 seconds of source audio. The producer queue holds about twice that
 amount. Keyboard speed changes also update the queue target. mpv adds its own
-cache. The reader reports slow synthesis; buffering cannot overcome a service
+cache. Buffering cannot overcome a service
 that stays slower than playback.
 
 Synthesis runs in a separate process. `q` and `Ctrl+C` stop that process and its
 children, including active downloads, model inference, and ffmpeg. Temporary
 files from the stopped worker are removed.
 
-The reader automatically resumes from the last played audio position after `q`,
-`Ctrl+C`, or a failure. It records playback time rather than queued audio. A changed
+`q` resets the playback position so the next run starts at the beginning.
+`Q` saves the position so the next run continues. Both keys retain player settings.
+The reader automatically resumes from the last played audio position after
+`Ctrl+C`, `Q`, or a failure. After `q`, playback starts from the beginning. It saves speed, volume, mute, the information panel,
+and the OSD display alongside playback time rather than queued audio. A changed
 book, language, mode, or voice/model identity starts a new reading position.
 Bookmarks are removed when reading finishes. To start at the beginning:
 
@@ -60,9 +69,9 @@ TTS_RESUME=0 ./tts book.fb2
 
 Generated PCM is cached under `TTS_CACHE_DIR/pcm`, with a default limit of 256 MiB.
 Keys include text, language, voice, model fingerprint, and PCM format. Cached data
-has a size and checksum; corrupt entries are regenerated. Online speech expires
-from lookup after a day because these services do not expose model revisions.
-RHVoice uses complete-book cache manifests when all blocks are still available;
+has a size and checksum; corrupt entries are regenerated. Online speech remains
+available until size-based cache eviction. RHVoice uses complete-book cache
+manifests when the blocks needed from the saved position remain available;
 otherwise it regenerates one native stream and skips the played prefix on resume.
 Audio is not saved next to the book.
 
@@ -236,3 +245,36 @@ downloads. `tts_config.py` and `tts_network.py` hold shared configuration and re
 rules. `tts_worker.py` produces PCM in an interruptible process; `tts_pipeline.py`
 buffers it and saves positions; `tts_playback.py` controls mpv; `tts_state.py` manages
 the PCM cache and bookmarks. No module imports helpers from the CLI.
+
+### Russian Silero pronunciation
+
+Russian Silero voices automatically use Silero Stress 1.5 for contextual stress
+placement and restoration of `ё`. Install it with the Silero dependencies:
+`python3 -m pip install ".[silero]"`. No extra flags or environment variables are needed.
+Other engines and non-Russian Silero voices receive the original text.
+
+Silero receives `+` before stressed vowels. Predictions can be wrong.
+If processing fails or changes the underlying text beyond stress marks and
+`е/ё`, the original fragment is used. Processing retains sentence and clause
+boundaries. Processed audio has separate cache keys from earlier plain-text audio.
+
+### Reliable resume and diagnostics
+
+An explicit `-s SPEED` overrides the remembered speed; otherwise playback restores
+the saved speed. `q` resets both the audio position and the text bookmark, while
+retaining volume, speed and the information-panel settings; `Q` saves the position.
+
+Edge, Google, Silero and Piper bookmarks identify original text fragments.
+Resuming skips previous fragments even if their audio has been evicted. If the
+current fragment's audio is unchanged, playback resumes at its saved sample
+offset; if regenerated audio differs, that fragment repeats from the beginning
+to avoid skipping words. Older bookmarks initially use their saved audio time
+and acquire a text bookmark during playback. Online audio no longer expires
+every day: normal cache size eviction controls retention. RHVoice retains
+continuous native synthesis; a complete cached stream can be read directly from
+the saved position. Without that cache, RHVoice regenerates the stream.
+
+Concurrent readers and writers share a cache lock. Nonempty synthesis diagnostics,
+including pronunciation failures, remain under `TTS_CACHE_DIR/logs` (normally
+`~/.cache/tts/logs`). The last ten logs are retained, up to 1 MiB each.
+Diagnostics remain out of the playback terminal.

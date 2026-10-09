@@ -177,9 +177,9 @@ class ReliabilityTests(unittest.TestCase):
     def test_checkpoint_uses_played_time_plus_resume_offset(self):
         bookmark = tts_state.Bookmark('text', 9, 'en')
         (self.directory / 'voice.json').write_text(json.dumps({'offset': 12, 'voice': 'fingerprint'}))
-        (self.directory / 'mpv-position.json').write_text(json.dumps({'seconds': 3.25}))
+        (self.directory / 'mpv-position.json').write_text(json.dumps({'seconds': 3.25, 'speed': 2.3}))
         tts_pipeline.PositionMonitor(self.directory, bookmark).checkpoint()
-        self.assertEqual(bookmark.read(), {'seconds': 15.25, 'voice': 'fingerprint'})
+        self.assertEqual(bookmark.read(), {'seconds': 15.25, 'voice': 'fingerprint', 'speed': 2.3})
         self.assertEqual(tts_state.Bookmark('different text', 9, 'en').read()['seconds'], 0)
         bookmark.clear()
         self.assertEqual(bookmark.read()['seconds'], 0)

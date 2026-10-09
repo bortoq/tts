@@ -24,20 +24,20 @@ class ReaderTests(unittest.TestCase):
         self.source.write_text("Привет, мир!", encoding="utf-8")
 
     def test_argument_order_and_default(self):
-        self.assertEqual(tts.parse_args([str(self.source)]), (self.source, 1, None, 1.0))
-        for mode in range(1, 10):
+        self.assertEqual(tts.parse_args([str(self.source)]), (self.source, 1, None, None))
+        for mode in config.MODES:
             for args in ([str(self.source), str(mode)], [str(mode), str(self.source)]):
-                self.assertEqual(tts.parse_args(args), (self.source, mode, None, 1.0))
+                self.assertEqual(tts.parse_args(args), (self.source, mode, None, None))
 
     def test_numeric_filename(self):
         source = self.directory / "3"
         source.write_text("test")
-        self.assertEqual(tts.parse_args([str(source)]), (source, 1, None, 1.0))
-        self.assertEqual(tts.parse_args([str(source), "4"]), (source, 4, None, 1.0))
+        self.assertEqual(tts.parse_args([str(source)]), (source, 1, None, None))
+        self.assertEqual(tts.parse_args([str(source), "4"]), (source, 4, None, None))
 
     def test_invalid_arguments(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            for args in (["missing"], [str(self.source), "10"], [str(self.source), "11"],
+            for args in (["missing"], [str(self.source), "10"], [str(self.source), "15"],
                          ["1", "2"], [str(self.source), "3", "4"]):
                 with self.assertRaises(SystemExit):
                     tts.parse_args(args)
