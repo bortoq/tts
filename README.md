@@ -288,6 +288,19 @@ missing prerequisites are failures in the live integration suite.
 The reader is distributed under the [MIT license](LICENSE). External engines,
 model weights and voice packages have their own licenses.
 
+## Russian Silero pause cleanup
+
+For `xenia` in `v4_ru`, a dialogue dash at the start of a synthesis request is
+removed before model inference. This model otherwise emits a long noisy pause
+before the first word. Words and dialogue punctuation inside requests are kept.
+
+The worker also cleans existing cached audio: pauses of at least 600 ms with RMS
+below roughly -48 dBFS and peaks below -36 dBFS are muted with short fades.
+Sample count and speech outside those quiet regions are unchanged. Cleaned PCM
+is cached; repeated cleanup is idempotent. A bookmark referencing the original
+cached bytes retains its sample offset when only this cleanup changes the audio.
+Restart the reader to use updated worker code; `Q` exits while saving position.
+
 ## Modules
 
 `tts.py` handles the CLI. `tts_books.py` parses input; `tts_text.py` splits sentences;

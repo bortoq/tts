@@ -124,3 +124,35 @@ an observed peak for this fixture/hardware, not an absolute upper bound. Silero
 includes the Russian pronunciation model. Local inference allocates model/tensor
 memory before encoded-audio limits can be checked. No subjective voice-quality
 score or acoustic-cleanliness guarantee is inferred from this test.
+
+## Reproduced Silero artifact — 2026-10-10
+
+Mode 5, `xenia` / `v4_ru`, book `01. Моя жизнь. Эдем. Расследование.fb2.zip`,
+source playback time **10:59:44**. Fragment 925 starts at 39,550.325 seconds. Its
+quiet noisy region is at **32.78–34.08 seconds within that fragment**, corresponding
+to approximately **10:59:43.1–10:59:44.4** in the book.
+
+The pronunciation markup expands this fragment to 809 characters and splits it
+into two synthesis requests of 657 and 151 characters. The second starts with a
+dialogue dash. Repeating the actual production requests regenerated the cached
+PCM byte for byte: SHA-256
+`d1229d0fe6eda00278524cd030f47cddb66c58989934c3bcc6b5dee7ef7c46b4`.
+Thus the residual signal is in synthesized PCM, before mpv playback.
+
+The second request originally lasts 8.6125 seconds and its first substantial
+voice occurs at about 1.18 seconds. Removing its leading dialogue dash yields
+7.4625 seconds with the first substantial voice at about 0.06 seconds. This fixes
+the source of the long leading pause for newly generated `xenia/v4_ru` requests.
+
+Existing cached audio is cleaned conservatively, using sustained near-silence
+with short fades instead of deleting samples. On the actual cached fragment, only
+32.80–34.06 seconds change; the central pause's RMS drops from about 59 signed
+16-bit units to zero. All other samples and the total length remain identical.
+Repeated cleanup produces identical bytes. Original bookmarks retain their sample
+offset when only the pause cleanup changes their audio hash.
+
+Regression checks cover normal speech, short quiet phonemes, old leading pauses,
+digital silence, idempotence, dialogue markers and cached-fragment resume without
+resynthesis. Current local suite: **116 passed**; clean base environment:
+**91 passed, 25 explicit skips** without optional dependencies. Acoustic quality
+outside this identified residual-noise case is not certified by these checks.

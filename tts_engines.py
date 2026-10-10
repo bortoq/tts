@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -146,6 +147,11 @@ class Synthesizer:
             tts_google.save(text, self.voice, output, network_timeout())
         else:
             import torch
+            if (self.voice == 'xenia' and self.spec.get('model') == 'v4_ru'
+                    and self.language.split('-')[0] == 'ru'):
+                # A leading dialogue dash makes this model emit a long noisy
+                # pause before the first word. It is punctuation, not speech.
+                text = re.sub(r'^[—–]\s+', '', text)
             if self.spec.get("script"):
                 options = {"pre_options":["TamilTranscribe"]} if self.spec["script"] == "Tamil" else {}
                 text = self.transliterate.process(self.spec["script"], "ISO", text, **options)

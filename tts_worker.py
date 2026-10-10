@@ -15,6 +15,42 @@ from tts_state import PCMCache, atomic_write, digest
 from tts_text import text_parts
 
 
+def clean_silero_pauses(pcm):
+    """Mute sustained near-silence in xenia/v4_ru speech, preserving timing.
+
+    This voice can leave a quiet vocoder residue in long pauses. Require at
+    least 600 ms below -48 dBFS RMS and a peak below -36 dBFS; short consonants
+    and normal speech are retained. Keep 20 ms at each edge and fade over 10 ms.
+    """
+    import numpy as np
+    if len(pcm) % 2:
+        raise ValueError('PCM must contain complete 16-bit samples.')
+    samples = np.frombuffer(pcm, dtype='<i2')
+    frame, margin = RATE // 100, RATE // 50
+    count = len(samples) // frame
+    if count < 60:
+        return pcm
+    windows = samples[:count * frame].reshape(count, frame).astype(np.float64)
+    quiet = (np.mean(windows * windows, axis=1) < 128 ** 2) & (np.max(np.abs(windows), axis=1) < 512)
+    edges = np.diff(np.concatenate(([False], quiet, [False])).astype(np.int8))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    result = None
+    for start, end in zip(starts, ends):
+        if end - start < 60 or (start == 0 and end == count):
+            continue
+        left, right = start * frame + margin, end * frame - margin
+        # A cleaned cache entry already has a zero core. Do not attenuate its
+        # fades again on every playback and change the bookmark fingerprint.
+        if not np.any(samples[left + frame:right - frame]):
+            continue
+        if result is None:
+            result = samples.copy()
+        result[left:left + frame] = (samples[left:left + frame] * np.linspace(1, 0, frame)).astype('<i2')
+        result[left + frame:right - frame] = 0
+        result[right - frame:right] = (samples[right - frame:right] * np.linspace(0, 1, frame)).astype('<i2')
+    return result.tobytes() if result is not None else pcm
+
+
 def decode_pcm(audio):
     maximum = byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND)
     with subprocess.Popen([executable('ffmpeg'), '-v', 'error', '-i', str(audio),
@@ -204,6 +240,8 @@ def produce(job, directory, output=None):
                 # must not invalidate a reading session's audio.
                 key = digest([identity, part, None])
                 pcm = cache.get(key)
+                needs_cache = pcm is None
+                same_timing_audio = None
                 if pcm is None:
                     # Annotation marks can expand the original fragment past the
                     # request limit. Retain its bookmark while splitting requests.
@@ -215,12 +253,25 @@ def produce(job, directory, output=None):
                             raise ValueError('Combined fragment exceeds TTS_MAX_PCM_BYTES.')
                         blocks.append(block)
                     pcm = b''.join(blocks)
+                if (synth.engine == 'Silero' and synth.voice == 'xenia'
+                        and isinstance(getattr(synth, 'spec', None), dict)
+                        and synth.spec.get('model') == 'v4_ru'):
+                    cleaned = clean_silero_pauses(pcm)
+                    if cleaned != pcm:
+                        # Repair cached and freshly generated audio alike. Keep
+                        # voice/text identity and duration, including bookmarks.
+                        same_timing_audio = hashlib.sha256(pcm).hexdigest()
+                        pcm = cleaned
+                        needs_cache = True
+                if needs_cache:
                     cache.put(key, pcm)
                 audio = hashlib.sha256(pcm).hexdigest()
                 if anchored and index == first:
                     # Regenerated speech may have different timing even within a
                     # fragment: replay that fragment rather than skip unknown words.
-                    fraction = cursor['fraction'] if cursor.get('audio') == audio else 0
+                    unchanged_timing = (cursor.get('audio') == audio
+                        or same_timing_audio is not None and cursor.get('audio') == same_timing_audio)
+                    fraction = cursor['fraction'] if unchanged_timing else 0
                     cut = min(len(pcm), int(len(pcm) / 2 * fraction) * 2)
                 else:
                     cut = min(len(pcm), skip)
