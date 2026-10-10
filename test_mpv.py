@@ -117,7 +117,9 @@ except tts.PlaybackStopped:
                 terminal_output.clear()
                 os.write(terminal, b'\x09')  # Ctrl+I / Tab
                 wait_for(lambda: terminal_contains(b'Audio:'), 'show information on Ctrl+I')
-                self.assertIn(b'pcm_s16le', terminal_output)
+                # Stats rendering varies by mpv version; query codec identity
+                # separately from checking that Ctrl+I opens the native panel.
+                self.assertEqual(property_value('audio-codec-name'), 'pcm_s16le')
                 os.write(terminal, b'\x09')  # Close stats before checking the normal status line.
                 terminal_output.clear()
                 os.write(terminal, b'\x0f')  # Ctrl+O
