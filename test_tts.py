@@ -1,3 +1,4 @@
+import importlib.util
 import contextlib
 import asyncio
 import io
@@ -119,6 +120,7 @@ class ReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Program not found: mpv"):
                 playback.player_command()
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_selects_gender_and_language(self):
         import edge_tts
         voices = [

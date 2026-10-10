@@ -2,28 +2,61 @@
 import hashlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
+import selectors
 import subprocess
 import sys
+import time
 
-from tts_config import BYTES_PER_SECOND, RATE, executable
+from tts_config import BYTES_PER_SECOND, RATE, byte_limit, executable
 from tts_engines import Synthesizer, silero_path
 from tts_state import PCMCache, atomic_write, digest
 from tts_text import text_parts
 
 
 def decode_pcm(audio):
-    result = subprocess.run([executable('ffmpeg'), '-v', 'error', '-i', str(audio),
-                             '-f', 's16le', '-ac', '1', '-ar', str(RATE), 'pipe:1'],
-                            capture_output=True, timeout=180)
-    if result.returncode or not result.stdout or len(result.stdout) % 2:
-        raise RuntimeError('ffmpeg: ' + (result.stderr.decode(errors='replace') or 'empty audio'))
-    return result.stdout
+    maximum = byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND)
+    with subprocess.Popen([executable('ffmpeg'), '-v', 'error', '-i', str(audio),
+                           '-f', 's16le', '-ac', '1', '-ar', str(RATE), 'pipe:1'],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        pcm, errors = bytearray(), bytearray()
+        deadline = time.monotonic() + 180
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, pcm)
+                selector.register(process.stderr, selectors.EVENT_READ, errors)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('ffmpeg exceeded its total deadline.')
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        block = os.read(key.fd, 64 * 1024)
+                        if not block:
+                            selector.unregister(key.fileobj)
+                        elif key.data is pcm:
+                            if len(pcm) + len(block) > maximum:
+                                raise ValueError(f'ffmpeg output exceeds TTS_MAX_PCM_BYTES ({maximum} bytes).')
+                            pcm.extend(block)
+                        elif len(errors) < 64 * 1024:
+                            errors.extend(block[:64 * 1024 - len(errors)])
+            status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+    if status or not pcm or len(pcm) % 2:
+        raise RuntimeError('ffmpeg: ' + (errors.decode(errors='replace') or 'empty audio'))
+    return bytes(pcm)
 
 
 def voice_identity(synth):
+    # Verification metadata does not change voice/audio. Keep bookmarks for
+    # existing pinned bytes; model_sha256 below identifies actual model changes.
+    spec = {key: value for key, value in getattr(synth, 'spec', {}).items()
+            if key not in ('size_bytes', 'md5_digest', 'sha256_digest', 'trusted_override')}
     identity = {'engine': synth.engine, 'language': synth.language, 'voice': synth.voice,
-                'spec': getattr(synth, 'spec', {}), 'pcm': 's16le/24000/mono/v1'}
+                'spec': spec, 'pcm': 's16le/24000/mono/v1'}
     packages = {'Edge': ('edge-tts',), 'Silero': ('torch', 'aksharamukha')}
     for package in packages.get(synth.engine, ()):
         try:
@@ -171,8 +204,14 @@ def produce(job, directory, output=None):
                 if pcm is None:
                     # Annotation marks can expand the original fragment past the
                     # request limit. Retain its bookmark while splitting requests.
-                    pcm = b''.join(decode_pcm(synth.generate(piece, directory))
-                                   for piece in text_parts(part, limit, synth.language))
+                    blocks, total = [], 0
+                    for piece in text_parts(part, limit, synth.language):
+                        block = decode_pcm(synth.generate(piece, directory))
+                        total += len(block)
+                        if total > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
+                            raise ValueError('Combined fragment exceeds TTS_MAX_PCM_BYTES.')
+                        blocks.append(block)
+                    pcm = b''.join(blocks)
                     cache.put(key, pcm)
                 audio = hashlib.sha256(pcm).hexdigest()
                 if anchored and index == first:

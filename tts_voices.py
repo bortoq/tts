@@ -9,7 +9,12 @@ import re
 import shutil
 import sys
 import tempfile
-import urllib.request
+from tts_languages import LANGUAGES
+from tts_model_pins import SILERO_PINS, SILERO_CATALOG
+from tts_config import byte_limit
+
+SILERO_TRUST_WARNING = ('Warning: Silero override has no SHA-256 pin. Loading this trusted '
+                        'configuration can execute code from the model package.')
 
 
 @lru_cache(maxsize=1)
@@ -17,19 +22,13 @@ def language_registry():
     aliases = {"rus": "ru", "eng": "en", "ukr": "uk", "ua": "uk", "bel": "be",
                "iw": "he", "jw": "jv", "cz": "cs"}
     names = {}
-    for path in (Path("/usr/share/iso-codes/json/iso_639-2.json"), Path("/usr/share/iso-codes/json/iso_639-3.json")):
-        if path.is_file():
-            data = json.loads(path.read_text())
-            for rows in data.values():
-                for row in rows:
-                    code = row.get("alpha_2", row.get("alpha_3"))
-                    for key in ("alpha_2", "alpha_3", "bibliographic"):
-                        if row.get(key):
-                            aliases[row[key]] = code
-                    for key in ("name", "common_name", "inverted_name"):
-                        for name in row.get(key, "").split(";"):
-                            if name.strip():
-                                names[name.strip().casefold()] = code
+    for alpha2, alpha3, bibliographic, name in LANGUAGES:
+        code = alpha2 or alpha3
+        aliases[alpha3] = code
+        if bibliographic:
+            aliases[bibliographic] = code
+        for label in name.split(';'):
+            names[label.strip().casefold()] = code
     for code, name in {"ru":"Russian", "en":"English", "uk":"Ukrainian", "pl":"Polish", "pt":"Portuguese",
                        "cs":"Czech", "sk":"Slovak", "ky":"Kyrgyz", "uz":"Uzbek", "sr":"Serbian", "sq":"Albanian",
                        "hr":"Croatian", "mk":"Macedonian", "eo":"Esperanto", "tt":"Tatar"}.items():
@@ -83,14 +82,25 @@ def cache_dir():
     return Path(os.environ.get("TTS_CACHE_DIR", str(Path.home() / ".cache/tts")))
 
 
-def download(url, path, size=None, md5=None, sha256=None, validator=None):
+def download(url, path, size=None, md5=None, sha256=None, validator=None, max_bytes=None):
     from tts_config import network_timeout
-    from tts_network import retry
+    from tts_network import open_url, response_blocks, retry
+    import time
     path = Path(path)
+    maximum = byte_limit('TTS_MAX_DOWNLOAD_BYTES', 512 * 1024 * 1024)
+    if max_bytes is not None:
+        if max_bytes <= 0:
+            raise ValueError('Download byte limit must be positive.')
+        maximum = min(maximum, max_bytes)
+    if size is not None and (size <= 0 or size > maximum):
+        raise ValueError(f'Download exceeds TTS_MAX_DOWNLOAD_BYTES ({maximum} bytes).')
+    maximum = min(maximum, size) if size is not None else maximum
     def valid(candidate):
         if not candidate.is_file() or not candidate.stat().st_size:
             return False
         if size is not None and candidate.stat().st_size != size:
+            return False
+        if candidate.stat().st_size > maximum:
             return False
         if md5 or sha256:
             digest = hashlib.md5() if md5 else hashlib.sha256()
@@ -123,15 +133,12 @@ def download(url, path, size=None, md5=None, sha256=None, validator=None):
         print(f"Downloading {path.name}...", file=sys.stderr)
         def transfer():
             digest = hashlib.md5()
-            with urllib.request.urlopen(url, timeout=network_timeout()) as response, partial.open("wb") as output:
-                while block := response.read(1024 * 1024):
+            deadline = time.monotonic() + network_timeout()
+            with open_url(url, timeout=network_timeout()) as response, partial.open("wb") as output:
+                for block in response_blocks(response, maximum, deadline):
                     output.write(block)
                     digest.update(block)
                 output.flush()
-                headers = getattr(response, 'headers', {})
-                length = headers.get('Content-Length')
-                if length and partial.stat().st_size != int(length):
-                    raise ConnectionError('Incomplete HTTP response.')
             return digest
         digest = retry(transfer)
         if size is not None and partial.stat().st_size != size:
@@ -239,7 +246,7 @@ for code, (name, script) in INDIC.items():
 def silero_voice(language, gender):
     custom = configured_voice("silero", language, gender)
     if custom:
-        return custom
+        return {**custom, 'trusted_override': True}
     code = base_language(language)
     if code not in SILERO:
         return extra_silero_model(language)
@@ -247,7 +254,7 @@ def silero_voice(language, gender):
     choices = [{"name": speaker, "language": code, "gender": sex} for sex, speaker in speakers.items()]
     selected = select_voice(choices, language, gender)
     result = {"speaker": selected["name"], "model": model,
-              "url": f"https://models.silero.ai/models/tts/{folder}/{model}.pt", "sample_rate":24000}
+              **SILERO_PINS[model], "sample_rate":24000}
     if code in INDIC:
         result["script"] = INDIC[code][1]
     return result
@@ -259,11 +266,13 @@ def extra_silero_model(language):
         import yaml
     except ImportError:
         raise ValueError("Additional Silero models need PyYAML: python3 -m pip install PyYAML")
-    revision = os.environ.get('TTS_SILERO_REVISION', 'master')
-    suffix = '-' + hashlib.sha256(revision.encode()).hexdigest()[:12] if 'TTS_SILERO_REVISION' in os.environ else ''
+    revision = os.environ.get('TTS_SILERO_REVISION', SILERO_CATALOG['revision'])
+    suffix = '-' + hashlib.sha256(revision.encode()).hexdigest()[:12]
     path = Path(os.environ.get("TTS_SILERO_INDEX", str(cache_dir() / f"silero-models{suffix}.yml")))
-    if not path.is_file():
-        download(f"https://raw.githubusercontent.com/snakers4/silero-models/{revision}/models.yml", path)
+    if 'TTS_SILERO_INDEX' not in os.environ:
+        expected = SILERO_CATALOG['sha256_digest'] if revision == SILERO_CATALOG['revision'] else None
+        download(f"https://raw.githubusercontent.com/snakers4/silero-models/{revision}/models.yml", path,
+                 sha256=expected, max_bytes=byte_limit('TTS_MAX_RPC_BYTES', 8 * 1024 * 1024))
     models = yaml.safe_load(path.read_text())["tts_models"].get(base_language(language), {})
     candidates = []
     for name, versions in models.items():
@@ -275,7 +284,9 @@ def extra_silero_model(language):
     name, model = sorted(candidates, key=lambda row: [int(n) for n in re.findall(r"\d+", row[0])], reverse=True)[0]
     rates = model.get("sample_rate", [24000])
     rates = [rates] if isinstance(rates, int) else rates
-    return {"model":name, "url":model["package"], "speaker":None,
+    pin = next((pin for pin in SILERO_PINS.values() if pin['url'] == model['package']), {})
+    return {"model":name, **pin, "url":model["package"], "speaker":None,
+            **({'sha256_digest': model['sha256_digest']} if model.get('sha256_digest') else {}),
             "sample_rate":24000 if 24000 in rates else max(rates)}
 
 
@@ -340,7 +351,8 @@ def piper_voice(language, gender, preferred):
         return select_voice(local, language, gender, preferred)
     try:
         if not index_path.is_file():
-            download(f"https://huggingface.co/rhasspy/piper-voices/resolve/{revision}/voices.json", index_path)
+            download(f"https://huggingface.co/rhasspy/piper-voices/resolve/{revision}/voices.json", index_path,
+                     max_bytes=byte_limit('TTS_MAX_RPC_BYTES', 8 * 1024 * 1024))
         index = json.loads(index_path.read_text())
     except OSError:
         if local:

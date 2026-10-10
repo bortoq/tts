@@ -1,4 +1,5 @@
 """Regression tests for audit fixes; all network responses are controlled."""
+import importlib.util
 import contextlib
 import hashlib
 import io
@@ -123,10 +124,10 @@ class ReliabilityTests(unittest.TestCase):
         destination = self.directory / 'model.pt'
         destination.write_bytes(b'corrupt')
         payload = b'valid model'
-        with patch.object(tts_voices.urllib.request, 'urlopen', return_value=io.BytesIO(payload)):
+        with patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(payload)):
             tts_voices.download('url', destination, len(payload), hashlib.md5(payload).hexdigest())
         self.assertEqual(destination.read_bytes(), payload)
-        with patch.object(tts_voices.urllib.request, 'urlopen') as request:
+        with patch.object(tts_network.urllib.request, 'urlopen') as request:
             tts_voices.download('url', destination, len(payload), hashlib.md5(payload).hexdigest())
             request.assert_not_called()
 
@@ -135,32 +136,34 @@ class ReliabilityTests(unittest.TestCase):
         response.headers = {'Content-Length': '50'}
         complete = io.BytesIO(b'complete')
         complete.headers = {'Content-Length': '8'}
-        with patch.object(tts_voices.urllib.request, 'urlopen', side_effect=[response, complete]), \
+        with patch.object(tts_network.urllib.request, 'urlopen', side_effect=[response, complete]), \
              patch.object(tts_network.time, 'sleep'):
             path = tts_voices.download('url', self.directory / 'model.pt')
         self.assertEqual(path.read_bytes(), b'complete')
         self.assertFalse(list(self.directory.glob('*.part')))
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_corrupt_package_is_removed_then_redownloaded(self):
         import torch
-        model_path = tts_engines.silero_path({'model': 'test', 'url': 'url'})
+        model_path = tts_engines.silero_path({'model': 'test', 'url': 'url', 'trusted_override': True})
         model_path.parent.mkdir(parents=True)
         model_path.write_bytes(b'corrupt package')
         good_importer = MagicMock()
         with patch.object(torch.package, 'PackageImporter', side_effect=[ValueError('corrupt'), good_importer]), \
-             patch.object(tts_voices.urllib.request, 'urlopen', return_value=io.BytesIO(b'good package')) as request:
-            tts_engines.load_silero({'model': 'test', 'url': 'url'})
+             patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(b'good package')) as request:
+            tts_engines.load_silero({'model': 'test', 'url': 'url', 'trusted_override': True})
         request.assert_called_once()
         self.assertEqual(model_path.read_bytes(), b'good package')
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_empty_download_does_not_poison_cache(self):
         import torch
-        with patch.object(tts_voices.urllib.request, 'urlopen', return_value=io.BytesIO(b'')), \
+        with patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(b'')), \
              patch.object(torch.package, 'PackageImporter') as importer:
             with self.assertRaisesRegex(RuntimeError, 'Empty download'):
-                tts_engines.load_silero({'model': 'test', 'url': 'url'})
+                tts_engines.load_silero({'model': 'test', 'url': 'url', 'trusted_override': True})
             importer.assert_not_called()
-        self.assertFalse(tts_engines.silero_path({'model': 'test', 'url': 'url'}).exists())
+        self.assertFalse(tts_engines.silero_path({'model': 'test', 'url': 'url', 'trusted_override': True}).exists())
 
     def test_pcm_cache_validates_data_and_evicts(self):
         with patch.dict(os.environ, {'TTS_PCM_CACHE_MB': '1'}):
@@ -265,10 +268,11 @@ time.sleep(60)
                     self.assertAlmostEqual(worker.target, 0.25 * 2.3)
                     (self.directory / 'mpv-position.json').unlink()
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_download_validates_before_atomic_commit(self):
         import torch
-        spec = {'model': 'bad', 'url': 'url'}
-        with patch.object(tts_voices.urllib.request, 'urlopen', return_value=io.BytesIO(b'not a package')), \
+        spec = {'model': 'bad', 'url': 'url', 'trusted_override': True}
+        with patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(b'not a package')), \
              patch.object(torch.package, 'PackageImporter', side_effect=ValueError('invalid package')):
             with self.assertRaisesRegex(ValueError, 'invalid package'):
                 tts_engines.load_silero(spec)

@@ -12,7 +12,7 @@ import threading
 from tts_playback import MpvPlayer
 from tts_state import Bookmark, atomic_write
 from tts_config import BYTES_PER_SECOND, MODES
-from tts_voices import cache_dir
+from tts_voices import cache_dir, configured_voice, SILERO_TRUST_WARNING
 
 
 def buffer_seconds(speed):
@@ -251,6 +251,13 @@ class PositionMonitor:
 
 
 def read_aloud(path, mode, language, text, directory, speed):
+    engine, gender, _ = MODES[mode]
+    if engine == 'Silero':
+        custom = configured_voice('silero', language, gender)
+        if custom and not custom.get('sha256_digest'):
+            # Worker diagnostics go to a log. Show this explicit trust warning
+            # in the terminal before the worker can execute a custom package.
+            print(SILERO_TRUST_WARNING, file=sys.stderr)
     bookmark = Bookmark(text, mode, language)
     source = directory / 'book.txt'
     source.write_text(text, encoding='utf-8')

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,16 +8,21 @@ version = "0.2.0"
 description = "Read TXT and FB2 books aloud with interactive mpv playback"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["defusedxml==0.7.1"]
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 edge = ["edge-tts>=7,<8"]
 silero = ["silero-stress==1.5", "torch>=2,<3", "numpy>=1.24,<3", "PyYAML>=6,<7"]
 indic = ["aksharamukha>=2,<3"]
-dev = ["ruff>=0.12"]
+dev = ["ruff==0.16.10", "build==1.3.0"]
 
 [project.scripts]
 tts = "tts:main"
 
 [tool.setuptools]
-py-modules = ["tts", "tts_books", "tts_config", "tts_engines", "tts_google", "tts_network", "tts_pipeline", "tts_playback", "tts_state", "tts_text", "tts_voices", "tts_worker", "tts_pronunciation"]
+py-modules = ["tts", "tts_books", "tts_config", "tts_engines", "tts_google", "tts_network", "tts_pipeline", "tts_playback", "tts_state", "tts_text", "tts_voices", "tts_worker", "tts_pronunciation", "tts_languages", "tts_model_pins"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

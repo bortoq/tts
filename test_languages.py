@@ -1,4 +1,5 @@
 """Language and voice routing tests use local catalogs, with no network calls."""
+import importlib.util
 import asyncio
 import base64
 import contextlib
@@ -15,6 +16,7 @@ import urllib.parse
 import tts
 import tts_engines as engines
 import tts_text
+import tts_network
 import urllib.request
 import tts_google
 import tts_voices
@@ -94,6 +96,7 @@ class LanguageTests(unittest.TestCase):
                 self.assertEqual(tts.main([str(source), str(mode), "-s", "2.3"]), 0)
                 self.assertEqual(stream.call_args.args[-1], 2.3)
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_prefers_region_before_default_voice(self):
         import edge_tts
         catalog = [
@@ -130,6 +133,7 @@ class LanguageTests(unittest.TestCase):
             self.assertEqual(load.call_args.args[0]["model"], "v3_de")
             self.assertNotIn("v4_ru", load.call_args.args[0]["url"])
 
+    @unittest.skipUnless(importlib.util.find_spec('yaml'), 'yaml optional dependency is required')
     def test_new_silero_languages_use_the_upstream_index(self):
         index = self.directory / "models.yml"
         index.write_text('tts_models:\n  new:\n    v6_new:\n      latest:\n        package: https://example.invalid/new.pt\n        sample_rate: [16000, 24000]\n')
@@ -227,7 +231,7 @@ class LanguageTests(unittest.TestCase):
     def test_download_checks_size_hash_and_removes_partial_files(self):
         payload = b"a small model fixture"
         path = self.directory / "model.onnx"
-        with patch.object(tts_voices.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(payload)), \
+        with patch.object(tts_network.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(payload)), \
              contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "Incomplete download"):
                 tts_voices.download("https://example.invalid/model", path, size=999)

@@ -1,43 +1,76 @@
-# Audit fixes
+# External audit fixes — 2026-10-09
 
-All eight recommendations from the project audit have been implemented.
-The entry point remains `tts.py`, modes are 1–9, and settings use `TTS_*`.
-There are no compatibility entry points or aliases. No files in `~/bin` were
-inspected or changed.
+This document records changes made after reviewing the external audit of commit
+`2e8d198f63dae0dcdd9cb9433db741a34b5f165e`. It replaces the earlier audit summary,
+which contained stale claims about daily online-cache invalidation and unspecified
+lint checks. These results concern code, packaging and signal generation; they
+are not a listening assessment or a penetration test of speech providers.
 
-| Finding | Implemented change | Regression coverage |
+| Finding | Change | Regression coverage |
 | --- | --- | --- |
-| Work continued after closing mpv | Dedicated synthesis process, process-group cancellation, reader join, worker-owned partial cleanup | Download/inference/decode cancellation fixtures; real mpv quit during prefill and paused playback |
-| Invalid Silero downloads poisoned the cache | Shared atomic downloader; nonempty, length, optional size/hash checks; package validation before commit; invalid cache recovery | Empty response, corrupt cached package, incomplete HTTP body, checksum and reuse tests |
-| One transient request stopped a whole book | Four bounded attempts, backoff and Retry-After; validated PCM cache; played-time bookmarks; drain audio before reporting final errors | Retry/status matrix, cache corruption/eviction, cached resume, real RHVoice resume |
-| Scripts and regional variants were mismatched | Script/region parsing, conflicting-script rejection, combined Piper local/catalog ranking, reported fallbacks | Chinese/Serbian/Portuguese matrix and exact catalog locale versus installed regional fallback |
-| Buffer size depended on arbitrary text pieces | PCM-duration queue, speed-adjusted startup target, keyboard speed updates, slow-producer reporting | Duration and queue bounds at 1x/2.3x/4x; real continuous mpv stream |
-| Engines split sentences differently | Shared sentence detector, language-specific abbreviations, Unicode closing delimiters, engine-specific limits | Dialogue, initials, decimals, ellipses, CJK quotes, long tokens, lossless text splitting |
-| Any file suffix was decoded as text; ZIP/XML were unbounded | Documented formats only, configurable file/member limit, streaming XML with consumed tree elements removed | PDF rejection, ZIP member limit, large nested-inline FB2 fixture, encodings |
-| Responsibilities and dependencies were unclear | Separate input/engine/network/playback/cache modules, pyproject extras and console entry point, portable local wrapper | Existing tests moved to responsible modules; RHVoice/Piper integration and multiple-language coverage |
+| New PCM could be evicted when timestamps tied | A SQLite logical access sequence is updated under the existing cross-process file lock. Newly written PCM is excluded from eviction candidates. Existing PCM metadata remains compatible. | Identical file timestamps, access after insertion, independent cache instances, concurrent processes |
+| XML entities bypassed the input limit | Declared dependency `defusedxml==0.7.1`; reject all DTDs/entities; enforce actual XML input bytes and extracted UTF-8 text bytes, maximum depth 128 and one million elements. TXT output is also bounded in UTF-8 bytes. | Plain/zipped entity fixtures, DTD without entities, nested duplicate text, excessive depth, existing encodings and inline markup |
+| Silero executed packages before a mandatory fingerprint check | Nine built-in model sizes/SHA-256 values in `tts_model_pins.py`; default catalog pinned to commit `d9355348e2781dc8fa25a135d1602c530afae24c` and SHA-256. Reject automatic unpinned packages. Explicit unpinned voice overrides are treated as trusted configuration and warned about in the terminal before worker startup, as well as before package loading. | Wrong cached/downloaded hashes never reach PackageImporter; unknown unpinned model rejected; warnings precede loading; adding verification metadata preserves bookmarks for unchanged model bytes |
+| ISO aliases depended on system files | Ship the ISO 639-2 terminology/bibliographic codes and English names in `tts_languages.py`; no `/usr/share/iso-codes` lookup. Three-letter-only codes remain unchanged. | `fra/fre`, `deu/ger`, `zho/chi`, `ces/cze`, script tags and language names without system data |
+| Responses and PCM were unbounded | Byte ceilings on RPC/catalogs, downloads, streamed Edge audio and generated audio. HTTP opening has a bounded wait including DNS/headers; complete response bodies share the attempt's deadline. ffmpeg pipes are drained incrementally with bounded PCM/diagnostics and a 180-second wall deadline; combined fragments are bounded too. | Declared/actual oversized replies, failed download cleanup, trickled-body deadline, stalled opening and late-response close, Edge stream stop, real ffmpeg output limit |
+| Base install tests failed on optional imports; no quality gate | Individual tests explicitly skip absent extras. GitHub Actions base matrix Python 3.10–3.13 plus Edge/Silero on 3.11; mpv/ffmpeg, tests, lint, build and installed-wheel smoke check. Separate manually dispatched live synthesis workflow. Ruff, build, setuptools and wheel versions pinned. | Full local suite and clean base virtual environment; installed wheel tested outside checkout |
+| No distribution license | MIT license and SPDX packaging metadata; external models/engines retain their own licenses. | Built wheel includes LICENSE |
+| Audit/documentation drift | Updated README resource settings, model trust boundary, ISO data, quality-gate commands and cache lifetime; replaced this audit summary. | Online PCM calendar-change regression remains enabled |
 
-## Validation and remaining limits
+## Validation
 
-Validation: 70 offline tests passed; Ruff passed; a clean wheel built successfully.
-The installed console entry point and a real RHVoice worker from that wheel passed.
-The local wrapper also passed after moving it to a directory with spaces.
+Commands executed with Python **3.11.4** on Linux:
 
-Offline tests include real mpv terminal controls and real native RHVoice playback
-through the production worker. Live RHVoice tests passed for both Russian genders
-and English. Live Piper tests passed for both Russian genders. Package tests used temporary directories only.
+```bash
+python3 -m unittest discover -v
+python3 -m ruff check .
+python3 -m build --outdir /tmp/tts-audit-dist
+python3 integration_tests.py --engine all --timeout 30
+```
 
-Live Edge, Google, and Silero model-download checks cannot pass in the restricted
-environment: Edge reaches its process deadline, while Google and Silero report
-DNS resolution failures. These failures are kept visible; simulated transport and
-real-torch PCM tests do not claim live backend verification.
+- Full installed environment: **102 tests passed**, no skips. This includes real
+  mpv PTY/control tests and native RHVoice playback; these are not mocked player
+  checks.
+- Clean base virtual environment, installed with `.[dev]`, without Edge, Torch
+  or PyYAML: **87 passed, 15 explicitly skipped, no failures/errors**. Skipped
+  optional-backend tests are not counted as verified.
+- **Ruff 0.16.10**: `ruff check .` passed with the repository's explicit
+  `E4,E7,E9,F` policy. `--isolated` intentionally ignores that policy and is not
+  the documented lint command.
+- Wheel and source archive built with **setuptools 80.9.0 / wheel 0.45.1**.
+  The wheel was installed in an isolated environment and its CLI, ISO aliases,
+  XML parsing and model-pin module checked from `/tmp`, outside the checkout.
+- **10 real synthesis tests passed**: RHVoice Russian female/male and English,
+  Edge female/male, Silero female/male, Piper female/male, Google. Tests decode
+  the generated files and check duration/signal level without playing sound.
+  Silero used the verified cached Russian model; its pinned bytes were also
+  freshly downloaded from the official server to `/tmp` and fingerprinted.
+- All nine pinned model files and the immutable catalog were downloaded and
+  fingerprinted without executing their packages. The installed Russian model
+  has the same SHA-256 as the freshly downloaded pinned file.
+- `git diff --check` passed.
 
-Engine language/gender coverage still depends on upstream voices and installed
-models. Unknown gender metadata remains explicitly reported. Region fallback
-within a language is reported; a known conflicting script is rejected. A service
-that remains slower than playback can still exhaust any finite buffer.
+The GitHub Actions definitions were added locally; their remote matrix has not
+been run as part of this local validation. Local checks used Python 3.11, not all
+four CI interpreter versions. Live synthesis checks validate signal generation,
+not pronunciation, absence of acoustic artifacts, or voice quality.
 
-The extracted book text is retained in memory; XML source bytes and a complete
-XML tree are no longer retained alongside it. The configurable input limit bounds
-this use. Local model reproducibility requires immutable URLs/revisions and expected
-checksums; Edge and Google do not expose a stable model revision. Their PCM lookup
-uses a daily cache epoch, while voice identity keeps bookmarks usable across days.
+## Remaining product and trust boundaries
+
+Silero's `torch.package` loading can execute Python code. SHA-256 pins prevent
+accepting changed package bytes; they do not sandbox trusted upstream code.
+Explicit unpinned overrides retain this risk and display a warning. Updating
+model pins requires a separate upstream review and fingerprint update. Additional
+catalog models need a known SHA-256 or an explicit trusted voice configuration.
+
+A timed-out HTTP opener may retain a daemon thread while the system completes
+DNS/header I/O. It cannot return a late response to the caller or model validator;
+late responses are closed. Per-attempt deadlines do not include retry backoff:
+there can be four attempts and bounded Retry-After waits. Downloads, audio and
+book text remain finite but model inference still needs enough RAM for the
+selected model. Limits are documented and configurable in README.
+
+The reader targets Linux/POSIX (`fcntl`, process groups, mpv Lua/terminal).
+RHVoice/Piper require their external programs and voices. Edge/Google send text
+to their providers, whose voice revisions cannot be pinned. Generated online PCM
+persists until size-based LRU eviction; it has no daily expiration.

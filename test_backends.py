@@ -1,11 +1,13 @@
 """Offline tests: Edge transport is simulated; Silero PCM uses real torch."""
+import importlib.util
 import asyncio
+import hashlib
 import io
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 import urllib.error
 import wave
 
@@ -22,6 +24,7 @@ class BackendTests(unittest.TestCase):
         sleep.start()
         self.addCleanup(sleep.stop)
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_both_voices_and_audio_replacement(self):
         import edge_tts
         calls = []
@@ -30,8 +33,8 @@ class BackendTests(unittest.TestCase):
             def __init__(self, text, voice):
                 calls.append((text, voice))
 
-            async def save(self, path):
-                Path(path).write_bytes(b"synthetic MP3 transport data" * 4)
+            async def stream(self):
+                yield {'type': 'audio', 'data': b"synthetic MP3 transport data" * 4}
 
         with patch.object(edge_tts, "Communicate", Transport):
             for mode, voice in ((3, "ru-RU-SvetlanaNeural"), (4, "ru-RU-DmitryNeural")):
@@ -43,38 +46,47 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(audio.read_bytes(), b"synthetic MP3 transport data" * 4)
                 self.assertEqual(calls[-2:], [("Первый текст.", voice), ("Второй текст.", voice)])
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_transport_failure_is_not_success(self):
         import edge_tts
         transport = MagicMock()
-        transport.save = AsyncMock(side_effect=ConnectionError("connection failed"))
+        async def fail():
+            raise ConnectionError('connection failed')
+            yield
+        transport.stream = fail
         with patch.object(edge_tts, "Communicate", return_value=transport):
             synth = engines.Synthesizer(3, "ru")
             with self.assertRaisesRegex(ConnectionError, "connection failed"):
                 synth.generate("Текст.", self.directory)
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_empty_response_is_rejected(self):
         import edge_tts
         transport = MagicMock()
-        async def empty(path):
-            Path(path).touch()
-        transport.save = empty
+        async def empty():
+            if False:
+                yield
+        transport.stream = empty
         with patch.object(edge_tts, "Communicate", return_value=transport):
             synth = engines.Synthesizer(4, "ru")
             with self.assertRaisesRegex(RuntimeError, "no audio was generated"):
                 synth.generate("Текст.", self.directory)
 
+    @unittest.skipUnless(importlib.util.find_spec('edge_tts'), 'edge_tts optional dependency is required')
     def test_edge_hanging_transport_times_out(self):
         import edge_tts
         transport = MagicMock()
-        async def hang(path):
+        async def hang():
             await asyncio.Event().wait()
-        transport.save = hang
+            yield
+        transport.stream = hang
         with patch.object(edge_tts, "Communicate", return_value=transport), \
              patch.dict(os.environ, {"TTS_NETWORK_TIMEOUT": "0.02"}):
             synth = engines.Synthesizer(3, "ru")
             with self.assertRaises(TimeoutError):
                 synth.generate("Текст.", self.directory)
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_both_voices_and_pcm_clamping(self):
         import torch
         model = MagicMock()
@@ -103,6 +115,7 @@ class BackendTests(unittest.TestCase):
                     engines.Synthesizer(mode, "zz")
             load.assert_not_called()
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_inference_failure_is_not_silent_audio(self):
         model = MagicMock()
         model.apply_tts.side_effect = ValueError("model error")
@@ -112,12 +125,14 @@ class BackendTests(unittest.TestCase):
                 synth.generate("Текст.", self.directory)
         self.assertFalse((self.directory / "speech.wav").exists())
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_model_download_and_cache_reuse(self):
         import torch
         payload = b"test package contents"
         with patch.dict(os.environ, {"TTS_CACHE_DIR": str(self.directory)}), \
              patch.object(urllib.request, "urlopen", return_value=io.BytesIO(payload)) as download, \
-             patch.object(torch.package, "PackageImporter") as importer:
+             patch.object(torch.package, "PackageImporter") as importer, \
+             patch.dict(engines.tts_voices.SILERO_PINS['v4_ru'], {'size_bytes': len(payload), 'sha256_digest': hashlib.sha256(payload).hexdigest()}):
             engines.load_silero(engines.tts_voices.silero_voice("ru", "female"))
             self.assertEqual((engines.silero_path(engines.tts_voices.silero_voice("ru", "female"))).read_bytes(), payload)
             self.assertFalse(list(self.directory.glob("*.part")))
@@ -126,6 +141,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(download.call_args.args[0], "https://models.silero.ai/models/tts/ru/v4_ru.pt")
             self.assertEqual(importer.call_count, 2)
 
+    @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')
     def test_silero_failed_download_leaves_no_cached_package(self):
         with patch.dict(os.environ, {"TTS_CACHE_DIR": str(self.directory)}), \
              patch.object(urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")):

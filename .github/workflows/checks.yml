@@ -1,0 +1,45 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+        extras: ['dev']
+        include:
+          - python: '3.11'
+            extras: 'dev,edge'
+          - python: '3.11'
+            extras: 'dev,silero'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install native playback tools
+        run: sudo apt-get update && sudo apt-get install -y mpv ffmpeg
+      - name: Install package and selected extras
+        run: python -m pip install ".[${{ matrix.extras }}]"
+      - name: Offline regression and real mpv tests
+        run: python -m unittest discover -v
+      - name: Lint
+        run: python -m ruff check .
+      - name: Build distributable
+        run: python -m build
+      - name: Verify installed wheel outside checkout
+        run: |
+          python -m venv /tmp/tts-wheel
+          /tmp/tts-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/tts-wheel/bin/tts --help
+

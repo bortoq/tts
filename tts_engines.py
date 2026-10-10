@@ -9,7 +9,7 @@ import wave
 
 import tts_google
 import tts_voices
-from tts_config import MODES, network_timeout, executable
+from tts_config import MODES, byte_limit, network_timeout, executable
 from tts_voices import normalize_language as normalize_lang
 from tts_network import retry
 
@@ -45,6 +45,14 @@ def silero_path(spec):
 
 
 def load_silero(spec):
+    checksum = spec.get('sha256_digest')
+    if not checksum:
+        if not spec.get('trusted_override'):
+            raise ValueError('Silero executable packages require sha256_digest. '
+                             'Configure a verified model in TTS_VOICE_CONFIG.')
+        print(tts_voices.SILERO_TRUST_WARNING, file=sys.stderr)
+    elif len(checksum) != 64 or any(c not in '0123456789abcdefABCDEF' for c in checksum):
+        raise ValueError('Silero sha256_digest must contain 64 hexadecimal characters.')
     import torch
     model_path = silero_path(spec)
     torch.set_num_threads(min(4, os.cpu_count() or 1))
@@ -56,7 +64,7 @@ def load_silero(spec):
     # Cached files and new downloads both pass package loading before use.
     # Downloaded candidates are validated before their atomic final rename.
     tts_voices.download(spec['url'], model_path, spec.get('size_bytes'), spec.get('md5_digest'),
-                        sha256=spec.get('sha256_digest'), validator=validate)
+                        sha256=checksum.lower() if checksum else None, validator=validate)
     return loaded[-1]
 
 
@@ -122,8 +130,18 @@ class Synthesizer:
         elif self.engine == "Edge":
             import edge_tts
             async def save():
-                await asyncio.wait_for(edge_tts.Communicate(text, self.voice).save(str(output)), timeout=network_timeout())
-            retry(lambda: asyncio.run(save()))
+                maximum = byte_limit('TTS_MAX_AUDIO_BYTES', 8 * 1024 * 1024)
+                size = 0
+                with output.open('wb') as stream:
+                    async for event in edge_tts.Communicate(text, self.voice).stream():
+                        if event['type'] == 'audio':
+                            size += len(event['data'])
+                            if size > maximum:
+                                raise ValueError('Edge response exceeds TTS_MAX_AUDIO_BYTES.')
+                            stream.write(event['data'])
+            async def timed_save():
+                await asyncio.wait_for(save(), timeout=network_timeout())
+            retry(lambda: asyncio.run(timed_save()))
         elif self.engine == "Google":
             tts_google.save(text, self.voice, output, network_timeout())
         else:
@@ -144,6 +162,8 @@ class Synthesizer:
                 wav.writeframes(samples)
         if not output.is_file() or output.stat().st_size < 44:
             raise RuntimeError(f"{self.engine}: no audio was generated")
+        if output.stat().st_size > byte_limit('TTS_MAX_AUDIO_BYTES', 8 * 1024 * 1024):
+            raise ValueError(f'{self.engine}: audio exceeds TTS_MAX_AUDIO_BYTES.')
         return output
 
 

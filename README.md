@@ -68,7 +68,8 @@ TTS_RESUME=0 ./tts book.fb2
 ```
 
 Generated PCM is cached under `TTS_CACHE_DIR/pcm`, with a default limit of 256 MiB.
-Keys include text, language, voice, model fingerprint, and PCM format. Cached data
+Keys include text, language, voice, model fingerprint, and PCM format. LRU order
+is stored in a locked SQLite index and does not depend on filesystem timestamps. Cached data
 has a size and checksum; corrupt entries are regenerated. Online speech remains
 available until size-based cache eviction. RHVoice uses complete-book cache
 manifests when the blocks needed from the saved position remain available;
@@ -89,11 +90,14 @@ FB2 and FB2.ZIP use `description/title-info/lang`. XML `encoding` sets the text
 encoding, not its language. Only TXT, FB2, and FB2.ZIP are accepted. A ZIP must contain exactly one FB2.
 Input files and uncompressed ZIP members are limited to 64 MiB by default;
 set `TTS_MAX_BOOK_BYTES` to change the byte limit. XML is parsed incrementally,
-with consumed elements removed from the tree. The extracted book text remains
+with consumed elements removed from the tree. DTDs and XML entities are rejected.
+The same byte limit applies to extracted UTF-8 text; XML depth is capped at 128
+and the number of elements at one million. The extracted book text remains
 in memory within that limit. The reader includes
 body text and notes without XML markup or images.
 
-ISO two-letter and three-letter codes are accepted. Regions and scripts are kept:
+ISO two-letter and three-letter codes are accepted using a bundled ISO 639-2 table;
+the system `iso-codes` package is not required. Regions and scripts are kept:
 `eng-US` becomes `en-US`, and `zh_Hant` becomes `zh-Hant`. Exact locales are preferred
 when the engine provides them. Contradictory script tags are rejected, including
 Serbian Latin/Cyrillic and Chinese Simplified/Traditional. Regional fallbacks are
@@ -105,7 +109,7 @@ Each engine uses its own voices for the requested language. The script never
 substitutes a Russian voice or switches engines to hide a missing language.
 
 - **RHVoice:** reads installed `voice.info` files and matches language and gender.
-  The system `iso-codes` database maps language names and ISO codes. Install RHVoice
+  The bundled ISO table maps language names and ISO codes. Install RHVoice
   voice packages for additional languages.
 - **Edge:** reads Microsoft's voice list and matches language, locale, and gender.
 - **Silero:** selects models for English, German, Spanish, French, Ukrainian, Uzbek,
@@ -132,6 +136,7 @@ Sources: [Silero models and speakers](https://github.com/snakers4/silero-models)
 ## Setup and configuration
 
 Required: Python 3.10 or newer, mpv, and ffmpeg on Linux.
+Installing the package includes `defusedxml` for safe FB2 parsing.
 Install only the dependencies for the engines you use:
 
 ```bash
@@ -155,22 +160,39 @@ RHVoice needs `RHVoice-test` and voice packages. Piper needs its executable;
 | `TTS_NETWORK_TIMEOUT` | Per-attempt network timeout in seconds; default `60` |
 | `TTS_BUFFER_SECONDS` | Startup buffer in playback seconds; default `8`, maximum `120` |
 | `TTS_PCM_CACHE_MB` | PCM cache size in MiB; default `256`; `0` disables writes |
-| `TTS_MAX_BOOK_BYTES` | Maximum file or uncompressed member size; default `67108864` |
+| `TTS_MAX_BOOK_BYTES` | Maximum file/member and extracted UTF-8 text size; default `67108864` |
+| `TTS_MAX_RPC_BYTES` | Maximum HTTP RPC response or downloaded catalog; default `8388608` (8 MiB) |
+| `TTS_MAX_DOWNLOAD_BYTES` | Maximum model/catalog download; default `536870912` (512 MiB) |
+| `TTS_MAX_AUDIO_BYTES` | Maximum generated encoded audio per request; default `8388608` |
+| `TTS_MAX_PCM_BYTES` | Maximum decoded PCM per text fragment; default `8640000` (180 audio seconds) |
 | `TTS_RESUME` | `1` resumes automatically (default); `0` starts at the beginning |
 | `TTS_PIPER_REVISION` | Piper catalog/model repository revision; default `main` |
-| `TTS_SILERO_REVISION` | Extra Silero catalog repository revision; default `master` |
+| `TTS_SILERO_REVISION` | Extra Silero catalog revision; default is the commit pinned in `tts_model_pins.py` |
 
 Online requests and downloads retry up to four times for connection errors,
 timeouts, HTTP 429, and temporary server errors. Backoff is bounded and honors
 `Retry-After` up to 60 seconds. Already-generated audio drains before a final
-synthesis error is reported.
+synthesis error is reported. HTTP response bodies have a deadline for the entire
+attempt, including DNS, headers and connection time, rather than a timeout renewed
+after each chunk. An opening timeout abandons the request and closes any late
+response without writing it to disk or loading it as a model.
+Edge's entire streaming request is bounded by an asyncio deadline. Decoding has
+a 180-second wall deadline and stops immediately on exceeding the PCM byte limit.
 
 Model downloads use temporary files and atomic renames. Empty responses,
 `Content-Length` mismatches, and supplied size/checksum mismatches are rejected.
-Silero packages must load successfully before a downloaded candidate is committed.
-Invalid cached packages are removed and downloaded again. Silero overrides can
-supply `size_bytes`, `md5_digest`, or `sha256_digest`. Use an immutable model URL
-and expected checksum, plus pinned catalog revisions, for reproducible local voices.
+All nine built-in Silero packages have expected sizes and SHA-256 pins in
+`tts_model_pins.py`. Checksums are verified before `PackageImporter` loads a cached
+or downloaded package. The default extra-language catalog has an immutable commit
+and SHA-256 pin. Automatic extra models without a known SHA-256 are rejected;
+configure their verified checksum in `TTS_VOICE_CONFIG` to use them.
+
+Silero packages can execute Python code during loading. Pins prevent accepting
+changed bytes; they do not sandbox the trusted upstream code. Explicit Silero
+overrides are trusted configuration. Overrides without `sha256_digest` produce
+a warning before any package loading; an MD5 alone is not a SHA-256 pin.
+Overrides can also supply `size_bytes` and `md5_digest`. Changing the catalog
+revision or supplying a local catalog does not grant trust to an executable model.
 Remote Edge/Google voices cannot be pinned to a public model revision.
 
 Voice overrides add languages, verified genders, or private models:
@@ -187,6 +209,7 @@ Voice overrides add languages, verified genders, or private models:
       "model": "v3_en_indic",
       "speaker": "tamil_female",
       "url": "https://models.silero.ai/models/tts/en/v3_en_indic.pt",
+      "sha256_digest": "8ebf6b8bc4a762117e5f8d9a6ba30ffcbb65eb669f57cecd6954b0f563095429",
       "sample_rate": 24000
     }}
   }
@@ -208,10 +231,15 @@ python3 tts.py book.fb2
 ## Tests
 
 ```bash
-python3 -m unittest -v
+python3 -m pip install ".[dev]"
+python3 -m unittest discover -v
+python3 -m ruff check .
+python3 -m build
 ```
 
-Install the Edge and Silero extras to run their unit tests. Playback tests need
+Ruff is pinned to 0.16.10 with the explicit `E4,E7,E9,F` rule set. Install the Edge
+and Silero extras to run their dependent unit tests; otherwise those tests report
+explicit skips. Playback tests need
 mpv and ffmpeg; native playback tests also need RHVoice and its Russian voices.
 
 Offline tests cover voice selection, ISO codes, regions, scripts, Google RPC
@@ -236,6 +264,17 @@ python3 integration_tests.py --engine all --timeout 30
 These use real services/models, have a process deadline, and fail if a dependency
 or service is unavailable. Their default model cache is `.cache/` in this project;
 `TTS_CACHE_DIR` overrides it. They do not play sound on speakers.
+
+GitHub Actions runs base installs on Python 3.10–3.13 and separate Edge/Silero
+jobs on Python 3.11, with mpv/ffmpeg, lint, builds, and an installed-wheel smoke
+test outside the checkout. Network synthesis is a separate manual workflow.
+RHVoice/Piper integrations require their executables and voice models locally;
+missing prerequisites are failures in the live integration suite.
+
+## License
+
+The reader is distributed under the [MIT license](LICENSE). External engines,
+model weights and voice packages have their own licenses.
 
 ## Modules
 

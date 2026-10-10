@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 from tts_voices import cache_dir
@@ -51,6 +52,19 @@ class PCMCache:
         with self.locked():
             return self._get(key)
 
+    def _access(self, key):
+        # The file lock also serializes this logical clock across cache instances.
+        # Filesystem timestamp resolution must not determine LRU ordering.
+        with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
+            index.execute('CREATE TABLE IF NOT EXISTS access (key TEXT PRIMARY KEY, sequence INTEGER)')
+            index.execute('INSERT OR REPLACE INTO access VALUES (?, '
+                          '(SELECT COALESCE(MAX(sequence), 0) + 1 FROM access))', (key,))
+
+    def _forget(self, key):
+        if (self.directory / 'lru.sqlite3').exists():
+            with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
+                index.execute('DELETE FROM access WHERE key = ?', (key,))
+
     def _get(self, key):
         path = self.directory / (key + '.pcm')
         try:
@@ -58,11 +72,12 @@ class PCMCache:
             data = path.read_bytes()
             if not data or len(data) % 2 or metadata != {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}:
                 raise ValueError('Invalid cached PCM')
-            path.touch()
+            self._access(key)
             return data
         except (OSError, ValueError):
             path.unlink(missing_ok=True)
             path.with_suffix('.json').unlink(missing_ok=True)
+            self._forget(key)
             return None
 
     def put(self, key, data):
@@ -80,16 +95,21 @@ class PCMCache:
         atomic_write(path, data)
         self.used += len(data) - previous
         atomic_write(path.with_suffix('.json'), json.dumps({'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}).encode())
+        self._access(key)
         if self.used <= self.limit:
             return
-        files = sorted(self.directory.glob('*.pcm'), key=lambda p: p.stat().st_mtime)
-        total = sum(p.stat().st_size for p in files)
+        with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
+            order = dict(index.execute('SELECT key, sequence FROM access'))
+        files = sorted((p for p in self.directory.glob('*.pcm') if p != path),
+                       key=lambda p: (order.get(p.stem, 0), p.name))
+        total = self.used
         for old in files:
             if total <= self.limit * 0.9:
                 break
             total -= old.stat().st_size
             old.unlink(missing_ok=True)
             old.with_suffix('.json').unlink(missing_ok=True)
+            self._forget(old.stem)
         self.used = total
 
 

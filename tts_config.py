@@ -34,3 +34,10 @@ def executable(name, fallback=None):
     raise ValueError(f"Program not found: {name}")
 
 
+def byte_limit(name, default):
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f'{name} must be positive.')
+    return value
+
+
