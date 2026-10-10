@@ -95,7 +95,10 @@ class BackendTests(unittest.TestCase):
             audio = torch.tensor([-2.0, -0.5, 0, 0.5, 2.0])
             return (audio, []) if kwargs.get('return_ts') else audio
         model.apply_tts.side_effect = infer
-        with patch.object(engines, "load_silero", return_value=model) as load:
+        adapter = MagicMock()
+        adapter.generate.side_effect = lambda *args, **kwargs: (infer(), None)
+        with patch.object(engines, "load_silero", return_value=model) as load, \
+             patch.object(engines, "SileroV4PauseAdapter", return_value=adapter):
             for mode, voice in ((5, "xenia"), (6, "aidar")):
                 synth = engines.Synthesizer(mode, "ru")
                 for text in ("Первый текст.", "Второй текст."):
@@ -107,8 +110,9 @@ class BackendTests(unittest.TestCase):
                         self.assertEqual(struct.unpack("<5h", wav.readframes(5)), (-32767, -16383, 0, 16383, 32767))
                     arguments = {'text': text, 'speaker': voice, 'sample_rate': 24000}
                     if mode == 5:
-                        arguments['return_ts'] = True
-                    model.apply_tts.assert_called_with(**arguments)
+                        adapter.generate.assert_called_with(text, voice, 24000, reference=False)
+                    else:
+                        model.apply_tts.assert_called_with(**arguments)
             self.assertEqual(load.call_count, 2)  # One load per instance, not per chunk.
 
     def test_silero_rejects_unsupported_languages_before_loading(self):
@@ -123,12 +127,13 @@ class BackendTests(unittest.TestCase):
     def test_silero_inference_failure_is_not_silent_audio(self):
         model = MagicMock()
         model.apply_tts.side_effect = ValueError("model error")
-        formatter = model.get_word_ts
-        with patch.object(engines, "load_silero", return_value=model):
+        adapter = MagicMock()
+        adapter.generate.side_effect = ValueError("model error")
+        with patch.object(engines, "load_silero", return_value=model), \
+             patch.object(engines, "SileroV4PauseAdapter", return_value=adapter):
             synth = engines.Synthesizer(5, "ru")
             with self.assertRaisesRegex(ValueError, "model error"):
                 synth.generate("Текст.", self.directory)
-        self.assertIs(model.get_word_ts, formatter)
         self.assertFalse((self.directory / "speech.wav").exists())
 
     @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')

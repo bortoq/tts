@@ -2,11 +2,9 @@
 import asyncio
 import hashlib
 import os
-import re
 from pathlib import Path
 import subprocess
 import sys
-import types
 import wave
 
 import tts_google
@@ -14,6 +12,8 @@ import tts_voices
 from tts_config import MODES, byte_limit, network_timeout, executable
 from tts_voices import normalize_language as normalize_lang
 from tts_network import retry
+from tts_model_pins import SILERO_PINS
+from tts_silero import MEL_PAUSE_REVISION, SileroV4PauseAdapter
 
 def run(command, **kwargs):
     result = subprocess.run(command, check=False, stderr=subprocess.PIPE, **kwargs)
@@ -68,26 +68,14 @@ def load_silero(spec):
     tts_voices.download(spec['url'], model_path, spec.get('size_bytes'), spec.get('md5_digest'),
                         sha256=checksum.lower() if checksum else None, validator=validate)
     return loaded[-1]
-
-
-def silero_pause_spans(model, clean, durations, mask):
-    """Read non-word intervals from the pinned v4_ru alignment output."""
-    durations = durations.detach().cpu().long().reshape(-1).tolist()
-    if len(durations) != len(mask):
-        raise ValueError('Silero returned inconsistent alignment lengths.')
-    spans, start, position = [], None, 0
-    for duration, spoken in zip(durations, mask):
-        if duration < 0:
-            raise ValueError('Silero returned a negative alignment duration.')
-        if not bool(spoken) and start is None:
-            start = position
-        elif bool(spoken) and start is not None:
-            spans.append((start * model.window, position * model.window))
-            start = None
-        position += duration
-    if start is not None:
-        spans.append((start * model.window, position * model.window))
-    return spans
+def write_silero_wave(path, audio, sample_rate):
+    import torch
+    samples = (audio.detach().cpu().clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2").tobytes()
+    with wave.open(str(path), 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(samples)
 
 
 class Synthesizer:
@@ -96,6 +84,10 @@ class Synthesizer:
         self.language = lang
         self.engine, gender, self.voice = MODES[mode]
         self.model = None
+        self.pause_adapter = None
+        self.processing_revision = None
+        self.reference_requested = False
+        self.reference_file = None
         if self.engine == "RHVoice":
             self.binary = executable("RHVoice-test")
             self.voice = choose_rhvoice(lang, gender, self.voice)
@@ -125,6 +117,11 @@ class Synthesizer:
                         raise ValueError(f"Silero has no gender metadata for '{lang}'.")
                     print(f"Silero has no gender metadata for '{lang}'; using the model's default voice.", file=sys.stderr)
                     self.voice = "default"
+            if (self.voice == 'xenia' and self.spec.get('model') == 'v4_ru'
+                    and str(self.spec.get('sha256_digest') or '').lower()
+                    == SILERO_PINS['v4_ru']['sha256_digest']):
+                self.pause_adapter = SileroV4PauseAdapter(self.model)
+                self.processing_revision = MEL_PAUSE_REVISION
         elif self.engine == "Piper":
             self.binary = executable("piper", Path.home() / "piper/piper/piper")
             self.spec = tts_voices.piper_voice(lang, gender, self.voice)
@@ -168,12 +165,6 @@ class Synthesizer:
             tts_google.save(text, self.voice, output, network_timeout())
         else:
             import torch
-            self.pause_spans = None
-            if (self.voice == 'xenia' and self.spec.get('model') == 'v4_ru'
-                    and self.language.split('-')[0] == 'ru'):
-                # A leading dialogue dash makes this model emit a long noisy
-                # pause before the first word. It is punctuation, not speech.
-                text = re.sub(r'^[—–]\s+', '', text)
             if self.spec.get("script"):
                 options = {"pre_options":["TamilTranscribe"]} if self.spec["script"] == "Tamil" else {}
                 text = self.transliterate.process(self.spec["script"], "ISO", text, **options)
@@ -181,24 +172,16 @@ class Synthesizer:
                 arguments = {"text":text, "sample_rate":self.sample_rate}
                 if self.voice != "default":
                     arguments["speaker"] = self.voice
-                if self.voice == 'xenia' and self.spec.get('model') == 'v4_ru':
-                    # The package's word formatter can assert on punctuation.
-                    # Collect its duration/mask output directly, without a
-                    # second inference or changes to the generated samples.
-                    original = self.model.get_word_ts
-                    self.model.get_word_ts = types.MethodType(silero_pause_spans, self.model)
-                    try:
-                        audio, self.pause_spans = self.model.apply_tts(**arguments, return_ts=True)
-                    finally:
-                        self.model.get_word_ts = original
+                self.reference_file = None
+                if self.pause_adapter is not None:
+                    audio, reference = self.pause_adapter.generate(
+                        text, self.voice, self.sample_rate, reference=self.reference_requested)
+                    if reference is not None:
+                        self.reference_file = directory / 'reference.wav'
+                        write_silero_wave(self.reference_file, reference, self.sample_rate)
                 else:
                     audio = self.model.apply_tts(**arguments)
-            samples = (audio.detach().cpu().clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2").tobytes()
-            with wave.open(str(output), "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(self.sample_rate)
-                wav.writeframes(samples)
+            write_silero_wave(output, audio, self.sample_rate)
         if not output.is_file() or output.stat().st_size < 44:
             raise RuntimeError(f"{self.engine}: no audio was generated")
         if output.stat().st_size > byte_limit('TTS_MAX_AUDIO_BYTES', 8 * 1024 * 1024):

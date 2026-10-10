@@ -13,58 +13,7 @@ from tts_config import BYTES_PER_SECOND, RATE, byte_limit, executable
 from tts_engines import Synthesizer, silero_path
 from tts_state import PCMCache, atomic_write, digest
 from tts_text import text_parts
-
-
-SILERO_PAUSE_REVISION = 'silero-pause-mask-v1'
-
-
-def clean_silero_pauses(pcm, spans=None):
-    """Mute sustained near-silence in xenia/v4_ru speech, preserving timing.
-
-    With model alignment, require 200 ms of non-word audio below -36 dBFS
-    RMS / -24 dBFS peak. The amplitude guard retains speech that overlaps an
-    approximate model boundary. Without alignment, retain the original
-    conservative detector only for recognizing previously cleaned cache bytes.
-    Keep 20 ms at each edge and fade over 10 ms; never change sample positions.
-    """
-    import numpy as np
-    if len(pcm) % 2:
-        raise ValueError('PCM must contain complete 16-bit samples.')
-    samples = np.frombuffer(pcm, dtype='<i2')
-    frame, margin = RATE // 100, RATE // 50
-    count = len(samples) // frame
-    minimum, rms, peak = (60, 128, 512) if spans is None else (20, 512, 2048)
-    if count < minimum:
-        return pcm
-    windows = samples[:count * frame].reshape(count, frame).astype(np.float64)
-    quiet = (np.mean(windows * windows, axis=1) < rms ** 2) & (np.max(np.abs(windows), axis=1) < peak)
-    if spans is not None:
-        aligned = np.zeros(count, dtype=bool)
-        for start, end in spans:
-            if not np.isfinite(start) or not np.isfinite(end) or start < 0 or end < start:
-                raise ValueError('Invalid Silero pause interval.')
-            # Only complete frames inside a model-labelled non-word interval.
-            left = min(count, int(np.ceil(start * RATE / frame)))
-            right = min(count, int(np.floor(end * RATE / frame)))
-            aligned[left:right] = True
-        quiet &= aligned
-    edges = np.diff(np.concatenate(([False], quiet, [False])).astype(np.int8))
-    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
-    result = None
-    for start, end in zip(starts, ends):
-        if end - start < minimum or (spans is None and start == 0 and end == count):
-            continue
-        left, right = start * frame + margin, end * frame - margin
-        # A cleaned cache entry already has a zero core. Do not attenuate its
-        # fades again on every playback and change the bookmark fingerprint.
-        if not np.any(samples[left + frame:right - frame]):
-            continue
-        if result is None:
-            result = samples.copy()
-        result[left:left + frame] = (samples[left:left + frame] * np.linspace(1, 0, frame)).astype('<i2')
-        result[left + frame:right - frame] = 0
-        result[right - frame:right] = (samples[right - frame:right] * np.linspace(0, 1, frame)).astype('<i2')
-    return result.tobytes() if result is not None else pcm
+from tts_silero import MEL_PAUSE_REVISION
 
 
 def decode_pcm(audio):
@@ -236,9 +185,7 @@ def produce(job, directory, output=None):
                 atomic_write(manifest, json.dumps(keys).encode())
     else:
         limit = 100 if synth.engine == 'Google' else 800
-        aligned_silero = (synth.engine == 'Silero' and synth.voice == 'xenia'
-                         and isinstance(getattr(synth, 'spec', None), dict)
-                         and synth.spec.get('model') == 'v4_ru')
+        adapted_silero = getattr(synth, 'processing_revision', None) == MEL_PAUSE_REVISION
         # Original fragments identify the reading location independently of audio
         # duration and pronunciation annotations. Keep layout stable across sessions.
         parts = list(text_parts(text, limit, synth.language))
@@ -258,44 +205,55 @@ def produce(job, directory, output=None):
                 # Persist online audio until normal LRU eviction; calendar changes
                 # must not invalidate a reading session's audio.
                 key = digest([identity, part, None])
-                if aligned_silero:
+                if adapted_silero:
                     pcm, processing = cache.get(key, with_processing=True)
                 else:
                     pcm, processing = cache.get(key), None
-                legacy = pcm
+                legacy, legacy_processing = pcm, processing
                 ready = (isinstance(processing, dict)
-                         and processing.get('revision') == SILERO_PAUSE_REVISION
+                         and processing.get('revision') == MEL_PAUSE_REVISION
                          and isinstance(processing.get('compatible_audio'), list))
-                if aligned_silero and not ready:
-                    # Older PCM has no alignment. Regenerate once rather than
-                    # guess which quiet samples are words; then reuse the cache.
+                if adapted_silero and not ready:
+                    # Regenerate audio from older pause treatments once.
                     pcm = None
                 needs_cache = pcm is None
                 if pcm is None:
                     # Annotation marks can expand the original fragment past the
                     # request limit. Retain its bookmark while splitting requests.
-                    blocks, raw_blocks, total = [], [], 0
+                    blocks, reference_blocks, total = [], [], 0
+                    reference_needed = adapted_silero and (legacy is not None or anchored and index == first)
                     for piece in text_parts(part, limit, synth.language):
+                        if adapted_silero:
+                            synth.reference_requested = reference_needed
                         block = decode_pcm(synth.generate(piece, directory))
                         total += len(block)
                         if total > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
                             raise ValueError('Combined fragment exceeds TTS_MAX_PCM_BYTES.')
-                        raw_blocks.append(block)
-                        if aligned_silero:
-                            if synth.pause_spans is None:
-                                raise ValueError('Silero did not return pause alignment.')
-                            block = clean_silero_pauses(block, synth.pause_spans)
+                        if reference_needed:
+                            if synth.reference_file is None:
+                                raise ValueError('Silero did not return reference audio.')
+                            reference_blocks.append(decode_pcm(synth.reference_file))
                         blocks.append(block)
                     pcm = b''.join(blocks)
-                    if aligned_silero:
-                        raw = b''.join(raw_blocks)
-                        compatible = [hashlib.sha256(raw).hexdigest()]
-                        if legacy is not None and (legacy == raw or legacy == clean_silero_pauses(raw)):
-                            compatible.append(hashlib.sha256(legacy).hexdigest())
-                        processing = {'revision': SILERO_PAUSE_REVISION,
+                    if adapted_silero:
+                        compatible = []
+                        if reference_needed:
+                            raw = b''.join(reference_blocks)
+                            raw_hash = hashlib.sha256(raw).hexdigest()
+                            compatible.append(raw_hash)
+                            old_aliases = (legacy_processing.get('compatible_audio', [])
+                                           if isinstance(legacy_processing, dict) else [])
+                            if not isinstance(old_aliases, list):
+                                old_aliases = []
+                            if (legacy is not None and len(legacy) == len(pcm) == len(raw)
+                                    and (hashlib.sha256(legacy).hexdigest() == raw_hash
+                                         or raw_hash in old_aliases)):
+                                compatible.append(hashlib.sha256(legacy).hexdigest())
+                                compatible.extend(value for value in old_aliases if isinstance(value, str))
+                        processing = {'revision': MEL_PAUSE_REVISION,
                                       'compatible_audio': sorted(set(compatible))}
                 if needs_cache:
-                    if aligned_silero:
+                    if adapted_silero:
                         cache.put(key, pcm, processing=processing)
                     else:
                         cache.put(key, pcm)
@@ -304,7 +262,7 @@ def produce(job, directory, output=None):
                     # Regenerated speech may have different timing even within a
                     # fragment: replay that fragment rather than skip unknown words.
                     unchanged_timing = (cursor.get('audio') == audio
-                        or aligned_silero and cursor.get('audio') in processing['compatible_audio'])
+                        or adapted_silero and cursor.get('audio') in processing['compatible_audio'])
                     fraction = cursor['fraction'] if unchanged_timing else 0
                     cut = min(len(pcm), int(len(pcm) / 2 * fraction) * 2)
                 else:

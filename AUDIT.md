@@ -192,3 +192,44 @@ voice quality. Diagnostic recordings stay outside tracked source files.
 
 Validation: 119 offline tests pass with optional dependencies; the clean base
 venv passes 91 tests with 28 optional skips. Ruff and whitespace checks pass.
+
+### Pre-vocoder Silero adapter — 2026-10-10
+
+Replaced the prior PCM pause suppression and leading-dialogue-dash removal with
+`tts_silero.py`, an adapter for the reviewed v4_ru/xenia package checksum. The
+adapter reuses original text preprocessing, accentuation, duration and pitch
+predictions, then replaces protected middles of long non-word acoustic intervals
+with the model's silence spectrum before vocoding. Sample duration is retained.
+Runs must contain a space or punctuation token and last at least 350 ms;
+125/150 ms left/right guards and 25 ms blends retain transitions. No amplitude
+threshold or VAD controls the correction. Word-token mel frames are untouched.
+
+Implementation exposed a correction to the earlier description: in both exact
+reproductions the long noisy token is a space after the preposition «В», not the
+period/dash itself. The period/dash influences the duration prediction through
+context. An initial punctuation-only adapter failed both reproductions and was
+corrected to include long space intervals before release. The mechanism and
+controlled acoustic-spectrum interventions remain valid; details are recorded
+in SILERO_PAUSE_DIAGNOSIS.md.
+
+Cache processing revision is now `silero-mel-pauses-v1`. Old processing algorithms
+are removed entirely. Only during migration, an additional vocoder pass on the
+unchanged spectrum supplies reference PCM. Its fingerprint, old cache aliases
+and sample length prove which old bookmarks have unchanged timing. Unproven
+old bookmarks replay their fragment; new synthesis normally uses one vocoder
+pass, and subsequent processed cache hits require no synthesis.
+
+Validation: 118 offline tests pass; the clean base venv passes 92 with 26 optional
+skips. Both live Silero voice tests pass. A stratified sample of 170 fragments
+from the two reported books generated 283 requests / 7243.925 s (2 h 00 m 44 s)
+of speech, with 449 corrected pause interiors. Every request passed finite-spectrum,
+frame-count and untouched-word-frame assertions. This is structural verification,
+not a subjective listening review of two hours. The raw reference PCM hashes for
+both exact reported fragments match their original hashes; durations remain
+45.750 and 41.550 s. Core noise RMS falls from 313.09 to 0.653 and from 70.78
+to 0.646 respectively. An isolated copy of the actual old cache confirms first
+migration and later cache reuse retain an old processed-PCM bookmark offset.
+Control clips play successfully in mpv at 1x and 3x with null output. Ruff,
+whitespace checks, sdist/wheel builds and installed-wheel imports outside the
+checkout pass; the installed worker no longer exposes either previous cleanup
+function. Recordings and diagnostic model outputs are excluded from tracked files.

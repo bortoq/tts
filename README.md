@@ -290,26 +290,27 @@ model weights and voice packages have their own licenses.
 
 ## Russian Silero pause cleanup
 
-For `xenia` in `v4_ru`, a dialogue dash at the start of a synthesis request is
-removed before model inference. This model otherwise emits a long noisy pause
-before the first word. Words and dialogue punctuation inside requests are kept.
+For the pinned `v4_ru` package with `xenia`, a dedicated adapter reuses the
+model's accentuation, duration and pitch predictors and corrects the acoustic
+spectrum before the vocoder. Long non-word runs containing spaces or punctuation
+are eligible; a 125 ms left guard and 150 ms right guard protect speech transitions,
+with 25 ms spectral blends at either edge. A run must last at least 350 ms.
+The protected middle uses the model's own silence value. Word-token spectra,
+short gaps, dialogue punctuation and the total duration are retained.
 
-The worker uses the model's duration/mask alignment to locate non-word pauses.
-Only aligned intervals containing at least 200 ms below roughly -36 dBFS RMS
-and -24 dBFS peak are muted, with short fades. This also covers vocoder noise
-after ordinary sentence punctuation; quiet words outside these intervals are
-kept. Sample count is unchanged. Old cached fragments without alignment are
-regenerated once, then the processed audio and processing revision are cached.
-Original audio fingerprints are retained for bookmarks when regeneration matches
-the original samples (or the previous conservative cleanup of those samples).
-If regenerated speech differs, the current fragment is replayed to avoid skipping
-words. A later cached playback retains the same bookmark compatibility.
+There is no PCM noise gate or leading-dash removal. The adapter is enabled only
+for the reviewed v4_ru package checksum, since its component API is private.
+Old PCM is regenerated once under a new processing revision. During migration,
+a reference waveform from the unchanged spectrum proves compatibility with old
+audio fingerprints; this preserves bookmarks when timing can be verified. Normal
+new synthesis uses one vocoder call. If old timing cannot be verified, the current
+fragment is replayed. Updated cached playback needs no additional synthesis.
 Restart the reader to use updated worker code; `Q` exits while saving position.
 
 ## Modules
 
 `tts.py` handles the CLI. `tts_books.py` parses input; `tts_text.py` splits sentences;
-`tts_engines.py` selects and runs engines; `tts_voices.py` manages catalogs and model
+`tts_engines.py` selects and runs engines; `tts_silero.py` adapts pinned Silero synthesis; `tts_voices.py` manages catalogs and model
 downloads. `tts_config.py` and `tts_network.py` hold shared configuration and retry
 rules. `tts_worker.py` produces PCM in an interruptible process; `tts_pipeline.py`
 buffers it and saves positions; `tts_playback.py` controls mpv; `tts_state.py` manages
