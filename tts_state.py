@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 import tempfile
 from tts_voices import cache_dir
+from tts_config import BYTES_PER_SECOND, byte_limit
 
 
 def digest(value):
@@ -69,7 +70,13 @@ class PCMCache:
         path = self.directory / (key + '.pcm')
         try:
             metadata = json.loads(path.with_suffix('.json').read_text())
-            data = path.read_bytes()
+            maximum = byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND)
+            size = path.stat().st_size
+            if (not isinstance(metadata, dict) or type(metadata.get('bytes')) is not int
+                    or metadata['bytes'] != size or not 0 < size <= maximum or size % 2):
+                raise ValueError('Invalid or oversized cached PCM')
+            with path.open('rb') as stream:
+                data = stream.read(maximum + 1)
             if not data or len(data) % 2 or metadata != {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}:
                 raise ValueError('Invalid cached PCM')
             self._access(key)
@@ -89,6 +96,8 @@ class PCMCache:
         if not data or len(data) % 2:
             raise ValueError('PCM must contain complete 16-bit samples.')
         if not self.limit or len(data) > self.limit:
+            return
+        if len(data) > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
             return
         path = self.directory / (key + '.pcm')
         previous = path.stat().st_size if path.exists() else 0

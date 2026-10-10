@@ -97,7 +97,12 @@ except tts.PlaybackStopped:
                         time.sleep(0.03)
                     self.fail(f"mpv did not {label}")
 
-                wait_for(lambda: property_value("path") == "-" and property_value("time-pos") is not None, "start stream")
+                def stdin_path():
+                    value = property_value('path')
+                    # mpv may normalize the '-' input to an absolute path.
+                    return isinstance(value, str) and Path(value).name == '-'
+
+                wait_for(lambda: stdin_path() and property_value("time-pos") is not None, "start stream")
                 self.assertAlmostEqual(property_value("speed"), 2.3)
                 os.write(terminal, b" ")
                 wait_for(lambda: property_value("pause") is True, "pause on Space")
@@ -145,7 +150,7 @@ except tts.PlaybackStopped:
                 events = [json.loads(line) for line in (directory / "mpv-events.jsonl").read_text().splitlines()]
                 self.assertEqual(sum(event.get('event') == 'start-file' for event in events), 1)
                 self.assertEqual(sum(event.get('event') == 'end-file' for event in events), 0)
-                self.assertEqual(property_value("path"), "-")
+                self.assertTrue(stdin_path())
                 self.assertAlmostEqual(property_value("speed"), speed)
                 os.write(terminal, b" ")
                 wait_for(lambda: property_value("pause") is True, "pause second part")

@@ -269,6 +269,8 @@ def extra_silero_model(language):
     revision = os.environ.get('TTS_SILERO_REVISION', SILERO_CATALOG['revision'])
     suffix = '-' + hashlib.sha256(revision.encode()).hexdigest()[:12]
     path = Path(os.environ.get("TTS_SILERO_INDEX", str(cache_dir() / f"silero-models{suffix}.yml")))
+    verified_catalog = ('TTS_SILERO_INDEX' not in os.environ
+                        and revision == SILERO_CATALOG['revision'])
     if 'TTS_SILERO_INDEX' not in os.environ:
         expected = SILERO_CATALOG['sha256_digest'] if revision == SILERO_CATALOG['revision'] else None
         download(f"https://raw.githubusercontent.com/snakers4/silero-models/{revision}/models.yml", path,
@@ -286,7 +288,10 @@ def extra_silero_model(language):
     rates = [rates] if isinstance(rates, int) else rates
     pin = next((pin for pin in SILERO_PINS.values() if pin['url'] == model['package']), {})
     return {"model":name, **pin, "url":model["package"], "speaker":None,
-            **({'sha256_digest': model['sha256_digest']} if model.get('sha256_digest') else {}),
+            # An unverified catalog cannot attest to its own executable model.
+            # Built-in URL pins take precedence even in a verified catalog.
+            **({'sha256_digest': model['sha256_digest']}
+               if verified_catalog and not pin and model.get('sha256_digest') else {}),
             "sample_rate":24000 if 24000 in rates else max(rates)}
 
 

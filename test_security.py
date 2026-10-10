@@ -3,6 +3,7 @@ import hashlib
 import contextlib
 import importlib.util
 import io
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -199,6 +200,92 @@ class SecurityTests(unittest.TestCase):
     def test_automatic_unpinned_model_is_rejected_before_loading(self):
         with self.assertRaisesRegex(ValueError, 'sha256_digest'):
             tts_engines.load_silero({'model': 'unknown', 'url': 'https://example.invalid/model'})
+
+    @unittest.skipUnless(importlib.util.find_spec('yaml'), 'yaml optional dependency is required')
+    def test_unverified_catalog_cannot_supply_its_own_trusted_hash(self):
+        data = json.dumps({'tts_models': {'new': {'v1_new': {'latest': {
+            'package': 'https://example.invalid/untrusted.pt', 'sha256_digest': 'a' * 64}}}}}).encode()
+        path = self.root / 'untrusted.yml'
+        path.write_bytes(data)
+        for configuration in ({'TTS_SILERO_INDEX': str(path)}, {'TTS_SILERO_REVISION': 'untrusted'}):
+            with self.subTest(configuration=configuration), patch.dict(os.environ, configuration), \
+                 patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(data)):
+                spec = tts_voices.extra_silero_model('new')
+                self.assertNotIn('sha256_digest', spec)
+                self.assertNotIn('trusted_override', spec)
+                with self.assertRaisesRegex(ValueError, 'sha256_digest'):
+                    tts_engines.load_silero(spec)
+
+    @unittest.skipUnless(importlib.util.find_spec('yaml'), 'yaml optional dependency is required')
+    def test_unverified_catalog_cannot_replace_builtin_pin(self):
+        pin = tts_voices.SILERO_PINS['v4_ru']
+        path = self.root / 'catalog.yml'
+        path.write_text(json.dumps({'tts_models': {'new': {'v1_new': {'latest': {
+            'package': pin['url'], 'sha256_digest': 'a' * 64}}}}}))
+        with patch.dict(os.environ, {'TTS_SILERO_INDEX': str(path)}):
+            spec = tts_voices.extra_silero_model('new')
+        self.assertEqual(spec['sha256_digest'], pin['sha256_digest'])
+        self.assertEqual(spec['size_bytes'], pin['size_bytes'])
+
+    @unittest.skipUnless(importlib.util.find_spec('yaml'), 'yaml optional dependency is required')
+    def test_verified_default_catalog_can_supply_model_pin(self):
+        data = json.dumps({'tts_models': {'new': {'v1_new': {'latest': {
+            'package': 'https://example.invalid/reviewed.pt', 'sha256_digest': 'a' * 64}}}}}).encode()
+        with patch.dict(tts_voices.SILERO_CATALOG, {'sha256_digest': hashlib.sha256(data).hexdigest()}), \
+             patch.object(tts_network.urllib.request, 'urlopen', return_value=io.BytesIO(data)):
+            spec = tts_voices.extra_silero_model('new')
+        self.assertEqual(spec['sha256_digest'], 'a' * 64)
+
+    def test_cached_pcm_limit_is_enforced_before_reading_bytes(self):
+        cache = tts_state.PCMCache()
+        cache.put('large', b'\1\0' * 32)
+        pcm_path = cache.directory / 'large.pcm'
+        original = Path.open
+        def checked_open(path, *args, **kwargs):
+            if path == pcm_path:
+                raise AssertionError('Oversized PCM must be rejected before opening it')
+            return original(path, *args, **kwargs)
+        with patch.dict(os.environ, {'TTS_MAX_PCM_BYTES': '16'}), \
+             patch.object(Path, 'open', checked_open):
+            self.assertIsNone(cache.get('large'))
+        self.assertFalse(pcm_path.exists())
+
+    def test_cached_pcm_actual_size_must_match_metadata_before_read(self):
+        cache = tts_state.PCMCache()
+        cache.put('large', b'\1\0' * 32)
+        metadata = cache.directory / 'large.json'
+        data = json.loads(metadata.read_text())
+        data['bytes'] = 2
+        metadata.write_text(json.dumps(data))
+        with patch.dict(os.environ, {'TTS_MAX_PCM_BYTES': '16'}):
+            self.assertIsNone(cache.get('large'))
+
+    def test_cache_does_not_write_entries_over_current_pcm_limit(self):
+        with patch.dict(os.environ, {'TTS_MAX_PCM_BYTES': '16'}):
+            cache = tts_state.PCMCache()
+            cache.put('oversized', b'\1\0' * 32)
+            self.assertFalse((cache.directory / 'oversized.pcm').exists())
+
+    def test_native_resume_regenerates_cached_blocks_over_lowered_limit(self):
+        source = self.root / 'book.txt'
+        source.write_text('Непрерывное чтение.')
+        job = {'text_file': str(source), 'mode': 1, 'language': 'ru',
+               'bookmark': {'seconds': 0, 'voice': ''}}
+        blocks = [b'\1\0' * 24000, b'\2\0' * 24000]
+        synth = Mock(engine='RHVoice', language='ru', voice='Anna')
+        with patch.object(tts_worker, 'Synthesizer', return_value=synth), \
+             patch.object(tts_worker, 'voice_identity', return_value='voice'), \
+             patch.object(tts_worker, 'continuous_rhvoice', return_value=iter(blocks)):
+            tts_worker.produce(job, self.root, io.BytesIO())
+        job['bookmark'] = {'seconds': 1.5, 'voice': 'voice'}
+        output = io.BytesIO()
+        with patch.dict(os.environ, {'TTS_MAX_PCM_BYTES': '16'}), \
+             patch.object(tts_worker, 'Synthesizer', return_value=synth), \
+             patch.object(tts_worker, 'voice_identity', return_value='voice'), \
+             patch.object(tts_worker, 'continuous_rhvoice', return_value=iter(blocks)) as regenerate:
+            tts_worker.produce(job, self.root, output)
+        regenerate.assert_called_once()
+        self.assertEqual(output.getvalue(), blocks[1][24000:])
 
     def test_explicit_unpinned_override_warns_before_package_loading(self):
         calls = []

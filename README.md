@@ -164,7 +164,7 @@ RHVoice needs `RHVoice-test` and voice packages. Piper needs its executable;
 | `TTS_MAX_RPC_BYTES` | Maximum HTTP RPC response or downloaded catalog; default `8388608` (8 MiB) |
 | `TTS_MAX_DOWNLOAD_BYTES` | Maximum model/catalog download; default `536870912` (512 MiB) |
 | `TTS_MAX_AUDIO_BYTES` | Maximum generated encoded audio per request; default `8388608` |
-| `TTS_MAX_PCM_BYTES` | Maximum decoded PCM per text fragment; default `8640000` (180 audio seconds) |
+| `TTS_MAX_PCM_BYTES` | Maximum decoded or cached PCM fragment; default `8640000` (180 audio seconds) |
 | `TTS_RESUME` | `1` resumes automatically (default); `0` starts at the beginning |
 | `TTS_PIPER_REVISION` | Piper catalog/model repository revision; default `main` |
 | `TTS_SILERO_REVISION` | Extra Silero catalog revision; default is the commit pinned in `tts_model_pins.py` |
@@ -193,7 +193,15 @@ overrides are trusted configuration. Overrides without `sha256_digest` produce
 a warning before any package loading; an MD5 alone is not a SHA-256 pin.
 Overrides can also supply `size_bytes` and `md5_digest`. Changing the catalog
 revision or supplying a local catalog does not grant trust to an executable model.
+SHA-256 values from an unverified local/alternate catalog are ignored. Trust comes
+from the built-in URL pins, the SHA-256-verified default catalog, or a separate
+explicit voice override. A catalog cannot replace the built-in hash for a known URL.
 Remote Edge/Google voices cannot be pinned to a public model revision.
+
+The PCM limit is checked against metadata and actual file size before reading
+cached audio. Old entries exceeding a lowered limit are discarded and regenerated;
+new oversized entries are not cached. RHVoice streams complete books in one-second
+blocks instead of retaining a whole decoded book in memory.
 
 Voice overrides add languages, verified genders, or private models:
 
@@ -267,7 +275,11 @@ or service is unavailable. Their default model cache is `.cache/` in this projec
 
 GitHub Actions runs base installs on Python 3.10–3.13 and separate Edge/Silero
 jobs on Python 3.11, with mpv/ffmpeg, lint, builds, and an installed-wheel smoke
-test outside the checkout. Network synthesis is a separate manual workflow.
+test outside the checkout. An additional Debian Trixie/Python 3.13 job runs the
+suite with Debian's mpv 0.40.x; logs record native-tool versions. PTY checks accept
+both relative and absolute representations of mpv's stdin path and query codec
+properties independently of the native panel's presentation.
+Network synthesis is a separate manual workflow.
 RHVoice/Piper integrations require their executables and voice models locally;
 missing prerequisites are failures in the live integration suite.
 

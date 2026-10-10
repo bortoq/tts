@@ -28,6 +28,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install native playback tools
         run: sudo apt-get update && sudo apt-get install -y mpv ffmpeg
+      - name: Report native versions
+        run: mpv --version && ffmpeg -version
       - name: Install package and selected extras
         run: python -m pip install ".[${{ matrix.extras }}]"
       - name: Offline regression and real mpv tests
@@ -42,4 +44,18 @@ jobs:
           /tmp/tts-wheel/bin/pip install dist/*.whl
           cd /tmp
           /tmp/tts-wheel/bin/tts --help
+
+  debian-mpv:
+    runs-on: ubuntu-24.04
+    container: python:3.13-slim-trixie
+    steps:
+      - name: Install Debian playback tools
+        run: apt-get update && apt-get install -y --no-install-recommends git mpv ffmpeg
+      - uses: actions/checkout@v4
+      - name: Report native versions
+        run: mpv --version && ffmpeg -version
+      - run: python -m pip install ".[dev]"
+      - name: Debian regression and real mpv tests
+        run: python -m unittest discover -v
+      - run: python -m ruff check .
 

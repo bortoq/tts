@@ -50,9 +50,9 @@ python3 integration_tests.py --engine all --timeout 30
   has the same SHA-256 as the freshly downloaded pinned file.
 - `git diff --check` passed.
 
-The GitHub Actions definitions were added locally; their remote matrix has not
-been run as part of this local validation. Local checks used Python 3.11, not all
-four CI interpreter versions. Live synthesis checks validate signal generation,
+The initial local validation used Python 3.11. After the mpv codec-rendering
+check was corrected, all six Ubuntu CI jobs passed on commit `17d78b9`: Python
+3.10–3.13 base, plus Python 3.11 Edge/Silero. See the [successful workflow](https://github.com/bortoq/tts/actions/runs/38041032973). Live synthesis checks validate signal generation,
 not pronunciation, absence of acoustic artifacts, or voice quality.
 
 ## Remaining product and trust boundaries
@@ -74,3 +74,53 @@ The reader targets Linux/POSIX (`fcntl`, process groups, mpv Lua/terminal).
 RHVoice/Piper require their external programs and voices. Edge/Google send text
 to their providers, whose voice revisions cannot be pinned. Generated online PCM
 persists until size-based LRU eviction; it has no daily expiration.
+
+## Follow-up audit of 17d78b9 — 2026-10-10
+
+- Alternative/local Silero catalogs can no longer authorize executable packages
+  with their own SHA-256 values. Only built-in URL pins, the independently pinned
+  default catalog, and explicit voice configuration can supply trusted hashes.
+  A known built-in URL's pin cannot be overridden by catalog metadata. Regression
+  checks exercise both local catalogs and alternative downloaded revisions, plus
+  the verified-default-catalog path.
+- The PTY test accepts mpv's relative `-` and absolute `/.../-` stdin paths.
+  Codec checks still use `audio-codec-name`; the native information panel must
+  actually open. A Debian Trixie job adds mpv 0.40.x to the Ubuntu matrix and
+  reports installed native-tool versions.
+- Cached PCM is bounded before reading: metadata byte count and actual file
+  size must agree and fit `TTS_MAX_PCM_BYTES`. The read is bounded too, and new
+  oversized cache entries are skipped. Native cached-book lookup rejects blocks
+  above the current limit and falls back to streaming synthesis. Lowering limits
+  does not authorize replay of an oversized cached fragment.
+- Current local suite: **109 passed** with installed extras; clean base environment
+  **91 passed / 18 explicit skips**. Ruff 0.16.10 and `git diff --check` passed.
+
+Live network checks remain manually dispatched to keep external service failures
+separate from deterministic CI. Subjective voice quality and acoustic artifact
+absence still require listening; successful signal/playback tests do not certify
+those properties.
+
+### Longer native-engine playback check
+
+A generated Russian fixture with 120 numbered sections and **28,329 characters**
+was read to completion through the production worker, cache and mpv. Three female
+voices were tested sequentially: Anna/RHVoice, xenia/Silero, irina/Piper. The player
+used `--ao=null` and **50x playback** to avoid sending sound to speakers and keep
+the check finite. This tests tens of minutes of source audio, not tens of minutes
+of wall-clock listening or a full novel.
+
+| Engine | Source audio | Wall time | Peak process-tree RSS |
+| --- | ---: | ---: | ---: |
+| RHVoice | 1,720.06 s | 42.74 s | 252.4 MiB |
+| Silero | 1,617.31 s | 73.85 s | 1,551.4 MiB |
+| Piper | 2,131.42 s | 144.93 s | 597.0 MiB |
+
+Each run recorded exactly **one start-file and one end-file**, completed without
+restarting mpv, and cleared its reading bookmark. Source duration includes pauses;
+wall time includes initialization, synthesis, caching and accelerated playback.
+RSS was sampled every 0.1 seconds by summing the runner and all descendants'
+`/proc/*/statm` resident pages; shared pages can be counted more than once. This is
+an observed peak for this fixture/hardware, not an absolute upper bound. Silero
+includes the Russian pronunciation model. Local inference allocates model/tensor
+memory before encoded-audio limits can be checked. No subjective voice-quality
+score or acoustic-cleanliness guarantee is inferred from this test.

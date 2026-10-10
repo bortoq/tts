@@ -150,7 +150,10 @@ def produce(job, directory, output=None):
             available = isinstance(keys, list) and bool(keys) and all(isinstance(key, str) for key in keys)
             if available:
                 first = min(int(seconds), len(keys) - 1)
-                available = all((cache.directory / (key + '.pcm')).is_file() for key in keys[first:])
+                maximum = byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND)
+                available = all((cache.directory / (key + '.pcm')).is_file()
+                                and (cache.directory / (key + '.pcm')).stat().st_size <= maximum
+                                for key in keys[first:])
         except (OSError, ValueError):
             available = False
         if available:
