@@ -156,3 +156,39 @@ digital silence, idempotence, dialogue markers and cached-fragment resume withou
 resynthesis. Current local suite: **116 passed**; clean base environment:
 **91 passed, 25 explicit skips** without optional dependencies. Acoustic quality
 outside this identified residual-noise case is not certified by these checks.
+
+### Follow-up Silero artifact — 2026-10-10
+
+The reported `03. Непобедимый. Рассказы.fb2.zip` case around 02:47–02:48
+reproduces with the updated reader. Fragment 4 starts at 164.700 s; after
+«из носовой части.» the model marks 3.3625–4.0125 s as non-word audio
+(absolute 02:48.0625–02:48.7125). Fresh synthesis matches the cached fragment's
+SHA-256 `33ba22bba15981ccb6e0e21b400aa135c7c91ba85d515a8f9c6e6eab2cadbf18`.
+This is ordinary sentence punctuation, not the previously reproduced leading
+conversation dash. The previous amplitude-only fix misses this louder residue.
+
+The worker now uses the pinned v4_ru model's duration/word-mask output in the
+same inference call. It mutes only complete 10 ms frames inside non-word spans
+with at least 200 ms below RMS 512 / peak 2048 in signed 16-bit PCM. The amplitude
+guard protects speech overlapping approximate alignment boundaries; 20 ms
+margins and 10 ms fades preserve transitions. Quiet words outside aligned
+non-word intervals remain untouched. The model's timestamp formatter is replaced
+temporarily to collect the raw masks without its punctuation-sensitive word-count
+assertion, and restored even when inference fails.
+
+Old cache entries without a processing revision regenerate once; processed PCM,
+revision and compatible original audio fingerprints are stored atomically under
+the cache lock. A second playback reuses the processed cache and retains bookmarks
+referencing original PCM or the previous conservative cleanup. Unmatched regenerated
+speech replays the current fragment rather than guessing its saved word position.
+This supersedes the earlier amplitude-only cleanup in the production pipeline.
+
+On the actual 45.750 s fragment, the 3.52–3.78 s noisy interval's RMS falls from
+313.09 to 0. Sample count is unchanged. A production-worker test with an isolated
+copy of the cache confirms the second playback needs no synthesis and keeps the
+original bookmark's sample offset. mpv also plays the corrected diagnostic clip
+at 3x successfully with a null audio output; this checks playback, not subjective
+voice quality. Diagnostic recordings stay outside tracked source files.
+
+Validation: 119 offline tests pass with optional dependencies; the clean base
+venv passes 91 tests with 28 optional skips. Ruff and whitespace checks pass.

@@ -49,9 +49,9 @@ class PCMCache:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def get(self, key):
+    def get(self, key, *, with_processing=False):
         with self.locked():
-            return self._get(key)
+            return self._get(key, with_processing=with_processing)
 
     def _access(self, key):
         # The file lock also serializes this logical clock across cache instances.
@@ -66,7 +66,7 @@ class PCMCache:
             with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
                 index.execute('DELETE FROM access WHERE key = ?', (key,))
 
-    def _get(self, key):
+    def _get(self, key, *, with_processing=False):
         path = self.directory / (key + '.pcm')
         try:
             metadata = json.loads(path.with_suffix('.json').read_text())
@@ -77,22 +77,25 @@ class PCMCache:
                 raise ValueError('Invalid or oversized cached PCM')
             with path.open('rb') as stream:
                 data = stream.read(maximum + 1)
-            if not data or len(data) % 2 or metadata != {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}:
+            expected = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+            if 'processing' in metadata:
+                expected['processing'] = metadata['processing']
+            if not data or len(data) % 2 or metadata != expected:
                 raise ValueError('Invalid cached PCM')
             self._access(key)
-            return data
+            return (data, metadata.get('processing')) if with_processing else data
         except (OSError, ValueError):
             path.unlink(missing_ok=True)
             path.with_suffix('.json').unlink(missing_ok=True)
             self._forget(key)
-            return None
+            return (None, None) if with_processing else None
 
-    def put(self, key, data):
+    def put(self, key, data, *, processing=None):
         with self.locked():
             self.used = sum(p.stat().st_size for p in self.directory.glob("*.pcm"))
-            return self._put(key, data)
+            return self._put(key, data, processing=processing)
 
-    def _put(self, key, data):
+    def _put(self, key, data, *, processing=None):
         if not data or len(data) % 2:
             raise ValueError('PCM must contain complete 16-bit samples.')
         if not self.limit or len(data) > self.limit:
@@ -103,7 +106,10 @@ class PCMCache:
         previous = path.stat().st_size if path.exists() else 0
         atomic_write(path, data)
         self.used += len(data) - previous
-        atomic_write(path.with_suffix('.json'), json.dumps({'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}).encode())
+        metadata = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        if processing is not None:
+            metadata['processing'] = processing
+        atomic_write(path.with_suffix('.json'), json.dumps(metadata).encode())
         self._access(key)
         if self.used <= self.limit:
             return

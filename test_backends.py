@@ -92,7 +92,8 @@ class BackendTests(unittest.TestCase):
         model = MagicMock()
         def infer(**kwargs):
             self.assertTrue(torch.is_inference_mode_enabled())
-            return torch.tensor([-2.0, -0.5, 0, 0.5, 2.0])
+            audio = torch.tensor([-2.0, -0.5, 0, 0.5, 2.0])
+            return (audio, []) if kwargs.get('return_ts') else audio
         model.apply_tts.side_effect = infer
         with patch.object(engines, "load_silero", return_value=model) as load:
             for mode, voice in ((5, "xenia"), (6, "aidar")):
@@ -104,7 +105,10 @@ class BackendTests(unittest.TestCase):
                         self.assertEqual(wav.getnframes(), 5)
                         import struct
                         self.assertEqual(struct.unpack("<5h", wav.readframes(5)), (-32767, -16383, 0, 16383, 32767))
-                    model.apply_tts.assert_called_with(text=text, speaker=voice, sample_rate=24000)
+                    arguments = {'text': text, 'speaker': voice, 'sample_rate': 24000}
+                    if mode == 5:
+                        arguments['return_ts'] = True
+                    model.apply_tts.assert_called_with(**arguments)
             self.assertEqual(load.call_count, 2)  # One load per instance, not per chunk.
 
     def test_silero_rejects_unsupported_languages_before_loading(self):
@@ -119,10 +123,12 @@ class BackendTests(unittest.TestCase):
     def test_silero_inference_failure_is_not_silent_audio(self):
         model = MagicMock()
         model.apply_tts.side_effect = ValueError("model error")
+        formatter = model.get_word_ts
         with patch.object(engines, "load_silero", return_value=model):
             synth = engines.Synthesizer(5, "ru")
             with self.assertRaisesRegex(ValueError, "model error"):
                 synth.generate("Текст.", self.directory)
+        self.assertIs(model.get_word_ts, formatter)
         self.assertFalse((self.directory / "speech.wav").exists())
 
     @unittest.skipUnless(importlib.util.find_spec('torch'), 'torch optional dependency is required')

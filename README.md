@@ -294,11 +294,16 @@ For `xenia` in `v4_ru`, a dialogue dash at the start of a synthesis request is
 removed before model inference. This model otherwise emits a long noisy pause
 before the first word. Words and dialogue punctuation inside requests are kept.
 
-The worker also cleans existing cached audio: pauses of at least 600 ms with RMS
-below roughly -48 dBFS and peaks below -36 dBFS are muted with short fades.
-Sample count and speech outside those quiet regions are unchanged. Cleaned PCM
-is cached; repeated cleanup is idempotent. A bookmark referencing the original
-cached bytes retains its sample offset when only this cleanup changes the audio.
+The worker uses the model's duration/mask alignment to locate non-word pauses.
+Only aligned intervals containing at least 200 ms below roughly -36 dBFS RMS
+and -24 dBFS peak are muted, with short fades. This also covers vocoder noise
+after ordinary sentence punctuation; quiet words outside these intervals are
+kept. Sample count is unchanged. Old cached fragments without alignment are
+regenerated once, then the processed audio and processing revision are cached.
+Original audio fingerprints are retained for bookmarks when regeneration matches
+the original samples (or the previous conservative cleanup of those samples).
+If regenerated speech differs, the current fragment is replayed to avoid skipping
+words. A later cached playback retains the same bookmark compatibility.
 Restart the reader to use updated worker code; `Q` exits while saving position.
 
 ## Modules

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import types
 import wave
 
 import tts_google
@@ -67,6 +68,26 @@ def load_silero(spec):
     tts_voices.download(spec['url'], model_path, spec.get('size_bytes'), spec.get('md5_digest'),
                         sha256=checksum.lower() if checksum else None, validator=validate)
     return loaded[-1]
+
+
+def silero_pause_spans(model, clean, durations, mask):
+    """Read non-word intervals from the pinned v4_ru alignment output."""
+    durations = durations.detach().cpu().long().reshape(-1).tolist()
+    if len(durations) != len(mask):
+        raise ValueError('Silero returned inconsistent alignment lengths.')
+    spans, start, position = [], None, 0
+    for duration, spoken in zip(durations, mask):
+        if duration < 0:
+            raise ValueError('Silero returned a negative alignment duration.')
+        if not bool(spoken) and start is None:
+            start = position
+        elif bool(spoken) and start is not None:
+            spans.append((start * model.window, position * model.window))
+            start = None
+        position += duration
+    if start is not None:
+        spans.append((start * model.window, position * model.window))
+    return spans
 
 
 class Synthesizer:
@@ -147,6 +168,7 @@ class Synthesizer:
             tts_google.save(text, self.voice, output, network_timeout())
         else:
             import torch
+            self.pause_spans = None
             if (self.voice == 'xenia' and self.spec.get('model') == 'v4_ru'
                     and self.language.split('-')[0] == 'ru'):
                 # A leading dialogue dash makes this model emit a long noisy
@@ -159,7 +181,18 @@ class Synthesizer:
                 arguments = {"text":text, "sample_rate":self.sample_rate}
                 if self.voice != "default":
                     arguments["speaker"] = self.voice
-                audio = self.model.apply_tts(**arguments)
+                if self.voice == 'xenia' and self.spec.get('model') == 'v4_ru':
+                    # The package's word formatter can assert on punctuation.
+                    # Collect its duration/mask output directly, without a
+                    # second inference or changes to the generated samples.
+                    original = self.model.get_word_ts
+                    self.model.get_word_ts = types.MethodType(silero_pause_spans, self.model)
+                    try:
+                        audio, self.pause_spans = self.model.apply_tts(**arguments, return_ts=True)
+                    finally:
+                        self.model.get_word_ts = original
+                else:
+                    audio = self.model.apply_tts(**arguments)
             samples = (audio.detach().cpu().clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2").tobytes()
             with wave.open(str(output), "wb") as wav:
                 wav.setnchannels(1)

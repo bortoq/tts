@@ -15,12 +15,17 @@ from tts_state import PCMCache, atomic_write, digest
 from tts_text import text_parts
 
 
-def clean_silero_pauses(pcm):
+SILERO_PAUSE_REVISION = 'silero-pause-mask-v1'
+
+
+def clean_silero_pauses(pcm, spans=None):
     """Mute sustained near-silence in xenia/v4_ru speech, preserving timing.
 
-    This voice can leave a quiet vocoder residue in long pauses. Require at
-    least 600 ms below -48 dBFS RMS and a peak below -36 dBFS; short consonants
-    and normal speech are retained. Keep 20 ms at each edge and fade over 10 ms.
+    With model alignment, require 200 ms of non-word audio below -36 dBFS
+    RMS / -24 dBFS peak. The amplitude guard retains speech that overlaps an
+    approximate model boundary. Without alignment, retain the original
+    conservative detector only for recognizing previously cleaned cache bytes.
+    Keep 20 ms at each edge and fade over 10 ms; never change sample positions.
     """
     import numpy as np
     if len(pcm) % 2:
@@ -28,15 +33,26 @@ def clean_silero_pauses(pcm):
     samples = np.frombuffer(pcm, dtype='<i2')
     frame, margin = RATE // 100, RATE // 50
     count = len(samples) // frame
-    if count < 60:
+    minimum, rms, peak = (60, 128, 512) if spans is None else (20, 512, 2048)
+    if count < minimum:
         return pcm
     windows = samples[:count * frame].reshape(count, frame).astype(np.float64)
-    quiet = (np.mean(windows * windows, axis=1) < 128 ** 2) & (np.max(np.abs(windows), axis=1) < 512)
+    quiet = (np.mean(windows * windows, axis=1) < rms ** 2) & (np.max(np.abs(windows), axis=1) < peak)
+    if spans is not None:
+        aligned = np.zeros(count, dtype=bool)
+        for start, end in spans:
+            if not np.isfinite(start) or not np.isfinite(end) or start < 0 or end < start:
+                raise ValueError('Invalid Silero pause interval.')
+            # Only complete frames inside a model-labelled non-word interval.
+            left = min(count, int(np.ceil(start * RATE / frame)))
+            right = min(count, int(np.floor(end * RATE / frame)))
+            aligned[left:right] = True
+        quiet &= aligned
     edges = np.diff(np.concatenate(([False], quiet, [False])).astype(np.int8))
     starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
     result = None
     for start, end in zip(starts, ends):
-        if end - start < 60 or (start == 0 and end == count):
+        if end - start < minimum or (spans is None and start == 0 and end == count):
             continue
         left, right = start * frame + margin, end * frame - margin
         # A cleaned cache entry already has a zero core. Do not attenuate its
@@ -220,6 +236,9 @@ def produce(job, directory, output=None):
                 atomic_write(manifest, json.dumps(keys).encode())
     else:
         limit = 100 if synth.engine == 'Google' else 800
+        aligned_silero = (synth.engine == 'Silero' and synth.voice == 'xenia'
+                         and isinstance(getattr(synth, 'spec', None), dict)
+                         and synth.spec.get('model') == 'v4_ru')
         # Original fragments identify the reading location independently of audio
         # duration and pronunciation annotations. Keep layout stable across sessions.
         parts = list(text_parts(text, limit, synth.language))
@@ -239,38 +258,53 @@ def produce(job, directory, output=None):
                 # Persist online audio until normal LRU eviction; calendar changes
                 # must not invalidate a reading session's audio.
                 key = digest([identity, part, None])
-                pcm = cache.get(key)
+                if aligned_silero:
+                    pcm, processing = cache.get(key, with_processing=True)
+                else:
+                    pcm, processing = cache.get(key), None
+                legacy = pcm
+                ready = (isinstance(processing, dict)
+                         and processing.get('revision') == SILERO_PAUSE_REVISION
+                         and isinstance(processing.get('compatible_audio'), list))
+                if aligned_silero and not ready:
+                    # Older PCM has no alignment. Regenerate once rather than
+                    # guess which quiet samples are words; then reuse the cache.
+                    pcm = None
                 needs_cache = pcm is None
-                same_timing_audio = None
                 if pcm is None:
                     # Annotation marks can expand the original fragment past the
                     # request limit. Retain its bookmark while splitting requests.
-                    blocks, total = [], 0
+                    blocks, raw_blocks, total = [], [], 0
                     for piece in text_parts(part, limit, synth.language):
                         block = decode_pcm(synth.generate(piece, directory))
                         total += len(block)
                         if total > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
                             raise ValueError('Combined fragment exceeds TTS_MAX_PCM_BYTES.')
+                        raw_blocks.append(block)
+                        if aligned_silero:
+                            if synth.pause_spans is None:
+                                raise ValueError('Silero did not return pause alignment.')
+                            block = clean_silero_pauses(block, synth.pause_spans)
                         blocks.append(block)
                     pcm = b''.join(blocks)
-                if (synth.engine == 'Silero' and synth.voice == 'xenia'
-                        and isinstance(getattr(synth, 'spec', None), dict)
-                        and synth.spec.get('model') == 'v4_ru'):
-                    cleaned = clean_silero_pauses(pcm)
-                    if cleaned != pcm:
-                        # Repair cached and freshly generated audio alike. Keep
-                        # voice/text identity and duration, including bookmarks.
-                        same_timing_audio = hashlib.sha256(pcm).hexdigest()
-                        pcm = cleaned
-                        needs_cache = True
+                    if aligned_silero:
+                        raw = b''.join(raw_blocks)
+                        compatible = [hashlib.sha256(raw).hexdigest()]
+                        if legacy is not None and (legacy == raw or legacy == clean_silero_pauses(raw)):
+                            compatible.append(hashlib.sha256(legacy).hexdigest())
+                        processing = {'revision': SILERO_PAUSE_REVISION,
+                                      'compatible_audio': sorted(set(compatible))}
                 if needs_cache:
-                    cache.put(key, pcm)
+                    if aligned_silero:
+                        cache.put(key, pcm, processing=processing)
+                    else:
+                        cache.put(key, pcm)
                 audio = hashlib.sha256(pcm).hexdigest()
                 if anchored and index == first:
                     # Regenerated speech may have different timing even within a
                     # fragment: replay that fragment rather than skip unknown words.
                     unchanged_timing = (cursor.get('audio') == audio
-                        or same_timing_audio is not None and cursor.get('audio') == same_timing_audio)
+                        or aligned_silero and cursor.get('audio') in processing['compatible_audio'])
                     fraction = cursor['fraction'] if unchanged_timing else 0
                     cut = min(len(pcm), int(len(pcm) / 2 * fraction) * 2)
                 else:
