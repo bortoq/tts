@@ -1,6 +1,7 @@
 """Speech engine adapters; no player or command-line dependencies."""
 import asyncio
 import hashlib
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,7 @@ from tts_config import MODES, byte_limit, network_timeout, executable
 from tts_voices import normalize_language as normalize_lang
 from tts_network import retry
 from tts_model_pins import SILERO_PINS
-from tts_silero import MEL_PAUSE_REVISION, SileroV4PauseAdapter
+from tts_silero import MEL_PAUSE_REVISION, UNCORRECTED_REVISION, SileroV4PauseAdapter
 
 def run(command, **kwargs):
     result = subprocess.run(command, check=False, stderr=subprocess.PIPE, **kwargs)
@@ -88,6 +89,7 @@ class Synthesizer:
         self.processing_revision = None
         self.reference_requested = False
         self.reference_file = None
+        self.last_processing_revision = None
         if self.engine == "RHVoice":
             self.binary = executable("RHVoice-test")
             self.voice = choose_rhvoice(lang, gender, self.voice)
@@ -173,9 +175,20 @@ class Synthesizer:
                 if self.voice != "default":
                     arguments["speaker"] = self.voice
                 self.reference_file = None
+                self.last_processing_revision = self.processing_revision
                 if self.pause_adapter is not None:
-                    audio, reference = self.pause_adapter.generate(
-                        text, self.voice, self.sample_rate, reference=self.reference_requested)
+                    try:
+                        audio, reference = self.pause_adapter.generate(
+                            text, self.voice, self.sample_rate, reference=self.reference_requested)
+                    except (ValueError, RuntimeError, AttributeError, TypeError, KeyError, IndexError) as error:
+                        # Resource exhaustion is not a compatibility failure.
+                        if isinstance(error, getattr(torch, 'OutOfMemoryError', MemoryError)):
+                            raise
+                        logging.getLogger(__name__).warning(
+                            'Silero pause correction failed; using standard synthesis: %s', error)
+                        audio = self.model.apply_tts(**arguments)
+                        reference = audio if self.reference_requested else None
+                        self.last_processing_revision = UNCORRECTED_REVISION
                     if reference is not None:
                         self.reference_file = directory / 'reference.wav'
                         write_silero_wave(self.reference_file, reference, self.sample_rate)

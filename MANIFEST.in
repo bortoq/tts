@@ -1,0 +1,2 @@
+include silero_regression.py
+recursive-include testdata/silero *.json *.md *.flac

@@ -69,7 +69,9 @@ TTS_RESUME=0 ./tts book.fb2
 
 Generated PCM is cached under `TTS_CACHE_DIR/pcm`, with a default limit of 256 MiB.
 Keys include text, language, voice, model fingerprint, and PCM format. LRU order
-is stored in a locked SQLite index and does not depend on filesystem timestamps. Cached data
+is stored in a locked SQLite index and does not depend on filesystem timestamps.
+Reducing the cache budget trims existing PCM immediately at initialization and
+on reads; setting it to zero removes existing PCM and disables new cache writes. Cached data
 has a size and checksum; corrupt entries are regenerated. Online speech remains
 available until size-based cache eviction. RHVoice uses complete-book cache
 manifests when the blocks needed from the saved position remain available;
@@ -166,7 +168,7 @@ RHVoice needs `RHVoice-test` and voice packages. Piper needs its executable;
 | `TTS_MAX_AUDIO_BYTES` | Maximum generated encoded audio per request; default `8388608` |
 | `TTS_MAX_PCM_BYTES` | Maximum decoded or cached PCM fragment; default `8640000` (180 audio seconds) |
 | `TTS_RESUME` | `1` resumes automatically (default); `0` starts at the beginning |
-| `TTS_PIPER_REVISION` | Piper catalog/model repository revision; default `main` |
+| `TTS_PIPER_REVISION` | Piper catalog/model repository revision; default pinned `c10ece1aade47bb51c153c893d14e5bf8e5b7117` |
 | `TTS_SILERO_REVISION` | Extra Silero catalog revision; default is the commit pinned in `tts_model_pins.py` |
 
 Online requests and downloads retry up to four times for connection errors,
@@ -300,12 +302,22 @@ short gaps, dialogue punctuation and the total duration are retained.
 
 There is no PCM noise gate or leading-dash removal. The adapter is enabled only
 for the reviewed v4_ru package checksum, since its component API is private.
+If correction fails, standard Silero synthesis continues with a visible warning.
+That audio has a separate cache marker associated with the attempted adapter
+revision; it is never labelled as corrected. Resource exhaustion and failures of
+standard synthesis still stop playback instead of being hidden.
 Old PCM is regenerated once under a new processing revision. During migration,
 a reference waveform from the unchanged spectrum proves compatibility with old
 audio fingerprints; this preserves bookmarks when timing can be verified. Normal
 new synthesis uses one vocoder call. If old timing cannot be verified, the current
-fragment is replayed. Updated cached playback needs no additional synthesis.
+fragment is replayed. Updating old cached speech displays a one-time notice.
+Updated cached playback needs no additional synthesis.
 Restart the reader to use updated worker code; `Q` exits while saving position.
+
+The [regression corpus](testdata/silero/README.md) includes purpose-written texts
+and lossless before/after recordings with PCM fingerprints. CI exercises the
+real pinned model on CPU PyTorch 2.6.0 and the latest supported 2.x. Manual
+listening review is explicitly pending; signal checks do not rate naturalness.
 
 ## Modules
 
@@ -348,3 +360,10 @@ Concurrent readers and writers share a cache lock. Nonempty synthesis diagnostic
 including pronunciation failures, remain under `TTS_CACHE_DIR/logs` (normally
 `~/.cache/tts/logs`). The last ten logs are retained, up to 1 MiB each.
 Diagnostics remain out of the playback terminal.
+
+On the local CPU, migrating 24 previously cached book fragments (16 m 51 s of
+source speech) took 50.73 s; replay of the processed cache took 1.25 s with model
+and accentor already loaded. This illustrates the one-time cost rather than a
+performance guarantee. Native synthesis remains available if pause correction
+fails, and the player reports that condition instead of silently treating the
+result as corrected speech.

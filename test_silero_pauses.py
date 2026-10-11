@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import tts_engines
 import tts_worker
-from tts_silero import MEL_PAUSE_REVISION, SileroV4PauseAdapter, quiet_pause_mel
+from tts_silero import MEL_PAUSE_REVISION, UNCORRECTED_REVISION, SileroV4PauseAdapter, quiet_pause_mel
 from tts_state import PCMCache, digest
 
 
@@ -133,6 +133,35 @@ class SileroMelPauseTests(unittest.TestCase):
             adapter.assert_not_called()
             model.apply_tts.assert_called_once_with(text='— Текст.', speaker='xenia', sample_rate=24000)
 
+    def test_adapter_failure_uses_native_speech_and_labels_it(self):
+        import torch
+        model, adapter = Mock(), Mock()
+        adapter.generate.side_effect = ValueError('inconsistent alignment')
+        model.apply_tts.return_value = torch.ones(3000) * .1
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(tts_engines, 'load_silero', return_value=model), \
+             patch.object(tts_engines, 'SileroV4PauseAdapter', return_value=adapter):
+            synth = tts_engines.Synthesizer(5, 'ru')
+            synth.reference_requested = True
+            with self.assertLogs('tts_engines', level='WARNING'):
+                output = synth.generate('— Текст.', Path(temporary))
+            self.assertEqual(synth.last_processing_revision, UNCORRECTED_REVISION)
+            self.assertEqual(synth.processing_revision, MEL_PAUSE_REVISION)
+            self.assertEqual(output.read_bytes(), synth.reference_file.read_bytes())
+            model.apply_tts.assert_called_once_with(text='— Текст.', sample_rate=24000, speaker='xenia')
+
+    def test_resource_exhaustion_does_not_start_another_synthesis(self):
+        import torch
+        model, adapter = Mock(), Mock()
+        adapter.generate.side_effect = torch.OutOfMemoryError('out of memory')
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(tts_engines, 'load_silero', return_value=model), \
+             patch.object(tts_engines, 'SileroV4PauseAdapter', return_value=adapter):
+            synth = tts_engines.Synthesizer(5, 'ru')
+            with self.assertRaises(torch.OutOfMemoryError):
+                synth.generate('Текст.', Path(temporary))
+            model.apply_tts.assert_not_called()
+
 
 class SileroMigrationTests(unittest.TestCase):
     def test_old_cache_migrates_once_and_bookmark_aliases_survive(self):
@@ -182,6 +211,20 @@ class SileroMigrationTests(unittest.TestCase):
                     output = io.BytesIO()
                     tts_worker.produce(job, root, output)
                 self.assertEqual(output.getvalue(), corrected)
+                cache.put(key, raw)
+                synth.last_processing_revision = UNCORRECTED_REVISION
+                with patch.object(tts_worker, 'decode_pcm', side_effect=[raw, raw]):
+                    tts_worker.produce(job, root, io.BytesIO())
+                data, processing = cache.get(key, with_processing=True)
+                self.assertEqual(data, raw)
+                self.assertEqual(processing['revision'], UNCORRECTED_REVISION)
+                self.assertEqual(processing['adapter_revision'], MEL_PAUSE_REVISION)
+                notices = json.loads((root / 'notices.json').read_text())
+                self.assertTrue(any('standard synthesis' in message for message in notices))
+                with patch.object(tts_worker, 'decode_pcm') as decode:
+                    tts_worker.produce(job, root, io.BytesIO())
+                decode.assert_not_called()
+                self.assertEqual(json.loads((root / 'notices.json').read_text()), notices)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,10 @@
+[
+  {"id":"preposition", "text":"В носовой части. В глубине района было тихо.", "focus":"Long predicted space after a short preposition"},
+  {"id":"dialogue", "text":"— В глубине сада было очень тихо, но затем кто-то заговорил.", "focus":"Leading dialogue dash and preposition"},
+  {"id":"quiet-consonants", "text":"Шёпот стих. Свет тихо мерцал, ветер шелестел в сухой листве.", "focus":"Quiet consonants and word boundaries"},
+  {"id":"short-gaps", "text":"Он и я. Мы в доме. Ты у окна. Да, всё ясно.", "focus":"Short words and short gaps"},
+  {"id":"foreign", "text":"Он сказал hello, затем прочитал API и продолжил говорить по-русски.", "focus":"Foreign insertions; unchanged reference path, not pronunciation correctness"},
+  {"id":"punctuation", "text":"«Стой!» — сказал он. Почему? Нет... Всё спокойно; можно идти дальше.", "focus":"Quotes, questions, semicolon and ellipsis"},
+  {"id":"numbers", "text":"В 2026 году прибор показал минус десять градусов. Значение было 3,14.", "focus":"Digits and numeric punctuation"},
+  {"id":"paragraph", "text":"Перед рассветом станция казалась пустой. В глубине коридора горела лампа. Человек остановился у двери, прислушался и осторожно постучал. — Вы здесь? Ответа не было. Он подождал ещё немного; часы на стене продолжали отсчитывать секунды. За окном шумел дождь, а в комнате было тепло и тихо. Когда дверь наконец открылась, человек произнёс своё имя и попросил разрешения войти.", "focus":"Longer paragraph with multiple acoustic contexts"}
+]

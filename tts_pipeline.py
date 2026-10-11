@@ -85,6 +85,7 @@ class AudioWorker:
         self.directory, self.target = directory, target
         self.speed, self.wall_target = speed, target / speed
         self.reader_error = None
+        self.notices_seen = set()
         self.items, self.buffered = deque(), 0
         self.done, self.stopped = False, False
         self.condition = threading.Condition()
@@ -118,7 +119,18 @@ class AudioWorker:
                 self.done = True
                 self.condition.notify_all()
 
+    def report_notices(self):
+        try:
+            messages = json.loads((self.directory / 'notices.json').read_text())
+            for message in messages:
+                if isinstance(message, str) and message not in self.notices_seen:
+                    print(message, file=sys.stderr, flush=True)
+                    self.notices_seen.add(message)
+        except (OSError, ValueError, TypeError):
+            pass
+
     def update_speed(self):
+        self.report_notices()
         try:
             value = json.loads((self.directory / 'mpv-position.json').read_text())
             speed = float(value['speed'])
@@ -154,6 +166,7 @@ class AudioWorker:
                 self.condition.wait(0.1)
 
     def result(self):
+        self.report_notices()
         if self.reader_error:
             raise RuntimeError(f"Cannot read synthesis output: {self.reader_error}")
         if self.process.wait(timeout=5):

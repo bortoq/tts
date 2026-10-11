@@ -13,7 +13,17 @@ from tts_config import BYTES_PER_SECOND, RATE, byte_limit, executable
 from tts_engines import Synthesizer, silero_path
 from tts_state import PCMCache, atomic_write, digest
 from tts_text import text_parts
-from tts_silero import MEL_PAUSE_REVISION
+from tts_silero import MEL_PAUSE_REVISION, UNCORRECTED_REVISION
+
+
+def worker_notice(directory, message):
+    path = directory / 'notices.json'
+    try:
+        notices = json.loads(path.read_text())
+    except (OSError, ValueError):
+        notices = []
+    if message not in notices:
+        atomic_write(path, json.dumps(notices + [message]).encode())
 
 
 def decode_pcm(audio):
@@ -211,16 +221,21 @@ def produce(job, directory, output=None):
                     pcm, processing = cache.get(key), None
                 legacy, legacy_processing = pcm, processing
                 ready = (isinstance(processing, dict)
-                         and processing.get('revision') == MEL_PAUSE_REVISION
+                         and (processing.get('revision') == MEL_PAUSE_REVISION
+                              or processing.get('revision') == UNCORRECTED_REVISION
+                              and processing.get('adapter_revision') == MEL_PAUSE_REVISION)
                          and isinstance(processing.get('compatible_audio'), list))
                 if adapted_silero and not ready:
                     # Regenerate audio from older pause treatments once.
                     pcm = None
+                    if legacy is not None:
+                        worker_notice(directory, 'Updating saved Silero speech once; this may take extra time.')
                 needs_cache = pcm is None
                 if pcm is None:
                     # Annotation marks can expand the original fragment past the
                     # request limit. Retain its bookmark while splitting requests.
                     blocks, reference_blocks, total = [], [], 0
+                    fallback = False
                     reference_needed = adapted_silero and (legacy is not None or anchored and index == first)
                     for piece in text_parts(part, limit, synth.language):
                         if adapted_silero:
@@ -229,6 +244,8 @@ def produce(job, directory, output=None):
                         total += len(block)
                         if total > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
                             raise ValueError('Combined fragment exceeds TTS_MAX_PCM_BYTES.')
+                        if adapted_silero:
+                            fallback |= getattr(synth, 'last_processing_revision', None) == UNCORRECTED_REVISION
                         if reference_needed:
                             if synth.reference_file is None:
                                 raise ValueError('Silero did not return reference audio.')
@@ -250,13 +267,16 @@ def produce(job, directory, output=None):
                                          or raw_hash in old_aliases)):
                                 compatible.append(hashlib.sha256(legacy).hexdigest())
                                 compatible.extend(value for value in old_aliases if isinstance(value, str))
-                        processing = {'revision': MEL_PAUSE_REVISION,
+                        processing = {'revision': UNCORRECTED_REVISION if fallback else MEL_PAUSE_REVISION,
+                                      'adapter_revision': MEL_PAUSE_REVISION,
                                       'compatible_audio': sorted(set(compatible))}
                 if needs_cache:
                     if adapted_silero:
                         cache.put(key, pcm, processing=processing)
                     else:
                         cache.put(key, pcm)
+                if adapted_silero and processing.get('revision') == UNCORRECTED_REVISION:
+                    worker_notice(directory, 'Silero pause correction is unavailable for this fragment; using standard synthesis.')
                 audio = hashlib.sha256(pcm).hexdigest()
                 if anchored and index == first:
                     # Regenerated speech may have different timing even within a

@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 from tts_languages import LANGUAGES
-from tts_model_pins import SILERO_PINS, SILERO_CATALOG
+from tts_model_pins import SILERO_PINS, SILERO_CATALOG, PIPER_CATALOG
 from tts_config import byte_limit
 
 SILERO_TRUST_WARNING = ('Warning: Silero override has no SHA-256 pin. Loading this trusted '
@@ -347,16 +347,19 @@ def piper_voice(language, gender, preferred):
     if custom:
         return custom
     local = [v for v in local_piper_catalog() if locale_score(language, v["language"]) >= 0]
-    revision = os.environ.get('TTS_PIPER_REVISION', 'main')
-    suffix = '-' + hashlib.sha256(revision.encode()).hexdigest()[:12] if 'TTS_PIPER_REVISION' in os.environ else ''
+    revision = os.environ.get('TTS_PIPER_REVISION', PIPER_CATALOG['revision'])
+    suffix = '-' + hashlib.sha256(revision.encode()).hexdigest()[:12]
     index_path = Path(os.environ.get("TTS_PIPER_INDEX", str(cache_dir() / f"piper-voices{suffix}.json")))
     # An exact installed locale needs no network. A cached catalog participates
     # in ranking before falling back to a different region.
     if not index_path.is_file() and any(v.get('gender') == gender and (locale_score(language, v['language']) == 3 or '-' not in normalize_language(language)) for v in local):
         return select_voice(local, language, gender, preferred)
     try:
-        if not index_path.is_file():
+        pinned = revision == PIPER_CATALOG['revision'] and 'TTS_PIPER_INDEX' not in os.environ
+        if pinned or not index_path.is_file():
             download(f"https://huggingface.co/rhasspy/piper-voices/resolve/{revision}/voices.json", index_path,
+                     PIPER_CATALOG['size_bytes'] if pinned else None,
+                     sha256=PIPER_CATALOG['sha256_digest'] if pinned else None,
                      max_bytes=byte_limit('TTS_MAX_RPC_BYTES', 8 * 1024 * 1024))
         index = json.loads(index_path.read_text())
     except OSError:

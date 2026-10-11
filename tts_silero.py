@@ -1,6 +1,7 @@
 """Pre-vocoder pause correction for the pinned Silero v4_ru package."""
 
 MEL_PAUSE_REVISION = 'silero-mel-pauses-v1'
+UNCORRECTED_REVISION = 'silero-uncorrected-v1'
 PUNCTUATION = '.,!?;:–…'
 
 

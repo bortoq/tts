@@ -233,3 +233,50 @@ Control clips play successfully in mpv at 1x and 3x with null output. Ruff,
 whitespace checks, sdist/wheel builds and installed-wheel imports outside the
 checkout pass; the installed worker no longer exposes either previous cleanup
 function. Recordings and diagnostic model outputs are excluded from tracked files.
+
+### Follow-up to audit f6d5175 — 2026-10-11
+
+Adapter compatibility/alignment errors now fall back to the pinned model's native
+`apply_tts` with a logged diagnostic and a visible parent-process warning. Native
+output uses `silero-uncorrected-v1` plus the attempted adapter revision; it is
+never marked as corrected and subsequent cache reads preserve that warning.
+Reference audio remains available for bookmark proof. Out-of-memory failures and
+errors from native synthesis propagate; resource exhaustion does not start a
+second synthesis attempt. Unit coverage includes fallback output, cache markers,
+bookmark compatibility, repeated reads and warning deduplication.
+
+The Silero extra now requires PyTorch >=2.6,<3. Two additional Checks jobs exercise
+the actual pinned model with CPU PyTorch 2.6.0 and the latest supported 2.x.
+`silero_regression.py` verifies native/reference equality, unchanged word-token
+mel frames, finite audio and unchanged sample count on eight authored texts,
+including short words, quiet consonants, punctuation, foreign text, numbers and a
+paragraph. The repository contains lossless before/after recordings for xenia
+and aidar, their decoded PCM hashes, generation metadata, a reproducer and a
+manual-review sheet. CI uploads each runtime's recordings. Fixture texts are CC0;
+upstream model attribution/licensing is retained separately. Manual listening and
+expert acoustic assessment remain pending and are not inferred from signal tests.
+
+Migration was measured on an isolated old cache covering the first 24 fragments
+of the user's «Непобедимый» book: 1010.875 seconds of source audio, 50.730 seconds
+for one-time migration and 1.249 seconds for cached replay. The model/accentor were
+already loaded; file I/O, pronunciation preprocessing and reference rendering are
+included. These are local CPU measurements, not performance guarantees. The
+player now displays a one-time explanation when it updates old saved speech.
+
+Lowering TTS_PCM_CACHE_MB trims existing PCM immediately at initialization and on
+reads, using the shared lock and deterministic SQLite LRU; zero removes existing
+PCM. A larger-budget older writer cannot defeat the smaller reader's budget on
+the reader's next access. Concurrent-writer checks remain in place.
+
+The default Piper catalog and model downloads use immutable Hugging Face revision
+`c10ece1aade47bb51c153c893d14e5bf8e5b7117`. The 245852-byte voices.json snapshot is
+verified with SHA-256 `b63d7a8663eb8bcf73d6545f1f7e4b49f9bcd2019e4fb6bd48e81642df183eed`,
+including cached copies. User-selected revisions/index overrides remain explicit.
+[Snapshot source](https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/voices.json).
+
+Validation for these changes: 124 offline tests pass; clean base venv passes 96
+with 28 optional skips. The real corpus command passes all 16 voice/text pairs,
+including a forced real-model fallback and a second generation reproducing all
+recorded PCM hashes. Ruff, whitespace checks and sdist/wheel builds pass; the
+sdist includes the corpus and reproducer. Expert listening remains an explicitly
+open quality task, separate from the completed code and signal checks.

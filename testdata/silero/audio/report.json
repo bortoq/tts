@@ -1,0 +1,266 @@
+{
+  "torch": "2.12.0+cpu",
+  "python": "3.11.4",
+  "model_sha256": "896ab96347d5bd781ab97959d4fd6885620e5aab52405d3445626eb7c1414b00",
+  "adapter": "silero-mel-pauses-v1",
+  "fallback_checked": true,
+  "manual_listening": "pending",
+  "cases": [
+    {
+      "id": "preposition",
+      "speaker": "xenia",
+      "seconds": 3.1625,
+      "audio": {
+        "before": {
+          "file": "xenia-preposition-before.flac",
+          "pcm_sha256": "389b483b8a54deae0f5ee8f1c011d6f0feeb34ac9742fabed8c65819a7cb617d"
+        },
+        "after": {
+          "file": "xenia-preposition-after.flac",
+          "pcm_sha256": "dadfc026e0aa7bafd11f5fd5afbf73d732249acded1de13c765587da49a35316"
+        }
+      },
+      "changed": true
+    },
+    {
+      "id": "dialogue",
+      "speaker": "xenia",
+      "seconds": 4.4875,
+      "audio": {
+        "before": {
+          "file": "xenia-dialogue-before.flac",
+          "pcm_sha256": "a297a8fc5eaf1cd3dc5347f6940dae857053c0c5547c7dd4686e1bfc8db2dfc6"
+        },
+        "after": {
+          "file": "xenia-dialogue-after.flac",
+          "pcm_sha256": "7c82904eeb9df1540243218a7ddb9804a0b57d8a8139e9ec7b62e6eeb0ce7b00"
+        }
+      },
+      "changed": true
+    },
+    {
+      "id": "quiet-consonants",
+      "speaker": "xenia",
+      "seconds": 4.15,
+      "audio": {
+        "before": {
+          "file": "xenia-quiet-consonants-before.flac",
+          "pcm_sha256": "80467729c8ced1e02439ede15fac17a55942c6943f6283ec2cf3e012e4417f40"
+        },
+        "after": {
+          "file": "xenia-quiet-consonants-after.flac",
+          "pcm_sha256": "80467729c8ced1e02439ede15fac17a55942c6943f6283ec2cf3e012e4417f40"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "short-gaps",
+      "speaker": "xenia",
+      "seconds": 4.475,
+      "audio": {
+        "before": {
+          "file": "xenia-short-gaps-before.flac",
+          "pcm_sha256": "fe7a2c568a4757ba63288906f85b4df895c21b74a98e64222089d77f4fc23c5d"
+        },
+        "after": {
+          "file": "xenia-short-gaps-after.flac",
+          "pcm_sha256": "4f2e4d8248e8e78f0372c0cbc20b16a1e370ae5ae6a246b2c1cc34c5cd408571"
+        }
+      },
+      "changed": true
+    },
+    {
+      "id": "foreign",
+      "speaker": "xenia",
+      "seconds": 3.125,
+      "audio": {
+        "before": {
+          "file": "xenia-foreign-before.flac",
+          "pcm_sha256": "83cb98c356f9cc2bc4c8629fb4952c091cb626ea8b76f822114f4128d110521a"
+        },
+        "after": {
+          "file": "xenia-foreign-after.flac",
+          "pcm_sha256": "83cb98c356f9cc2bc4c8629fb4952c091cb626ea8b76f822114f4128d110521a"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "punctuation",
+      "speaker": "xenia",
+      "seconds": 5.725,
+      "audio": {
+        "before": {
+          "file": "xenia-punctuation-before.flac",
+          "pcm_sha256": "5bab7aa5499c5b835dffc08ab88156afdb753b9bf8212909f8542664137b78f9"
+        },
+        "after": {
+          "file": "xenia-punctuation-after.flac",
+          "pcm_sha256": "a26005be076a5b361ba19732e0d73616b21474a825d0d27a7553a19e07715271"
+        }
+      },
+      "changed": true
+    },
+    {
+      "id": "numbers",
+      "speaker": "xenia",
+      "seconds": 3.6125,
+      "audio": {
+        "before": {
+          "file": "xenia-numbers-before.flac",
+          "pcm_sha256": "e288e752f7fa9898e3c3fff87a453294ccf748dc3d133aa08f6d76079aa93622"
+        },
+        "after": {
+          "file": "xenia-numbers-after.flac",
+          "pcm_sha256": "e288e752f7fa9898e3c3fff87a453294ccf748dc3d133aa08f6d76079aa93622"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "paragraph",
+      "speaker": "xenia",
+      "seconds": 23.0625,
+      "audio": {
+        "before": {
+          "file": "xenia-paragraph-before.flac",
+          "pcm_sha256": "2af9fa522770fff766f5b65f0156db466d01502fbc44b7555fba766347b191af"
+        },
+        "after": {
+          "file": "xenia-paragraph-after.flac",
+          "pcm_sha256": "f027bd2fa463c18eb6a1a13a0c29951c2178d57444b9b8293882377131a8a03c"
+        }
+      },
+      "changed": true
+    },
+    {
+      "id": "preposition",
+      "speaker": "aidar",
+      "seconds": 3.375,
+      "audio": {
+        "before": {
+          "file": "aidar-preposition-before.flac",
+          "pcm_sha256": "89e9aba2d9c60dbd3a97cd34e7f531022a8198b056ab954840c85ef031a5a808"
+        },
+        "after": {
+          "file": "aidar-preposition-after.flac",
+          "pcm_sha256": "89e9aba2d9c60dbd3a97cd34e7f531022a8198b056ab954840c85ef031a5a808"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "dialogue",
+      "speaker": "aidar",
+      "seconds": 4.8375,
+      "audio": {
+        "before": {
+          "file": "aidar-dialogue-before.flac",
+          "pcm_sha256": "b629f61e48c125c9ce96ce9c8d578625a7d59b87123e96ac7dd01450d84f225c"
+        },
+        "after": {
+          "file": "aidar-dialogue-after.flac",
+          "pcm_sha256": "b629f61e48c125c9ce96ce9c8d578625a7d59b87123e96ac7dd01450d84f225c"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "quiet-consonants",
+      "speaker": "aidar",
+      "seconds": 4.6,
+      "audio": {
+        "before": {
+          "file": "aidar-quiet-consonants-before.flac",
+          "pcm_sha256": "15379b5e1b8451f0f4bb003d21f73b4a0dca61c86b98483cf1b2a0f855809bfb"
+        },
+        "after": {
+          "file": "aidar-quiet-consonants-after.flac",
+          "pcm_sha256": "15379b5e1b8451f0f4bb003d21f73b4a0dca61c86b98483cf1b2a0f855809bfb"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "short-gaps",
+      "speaker": "aidar",
+      "seconds": 3.9625,
+      "audio": {
+        "before": {
+          "file": "aidar-short-gaps-before.flac",
+          "pcm_sha256": "c5a0f1423c996790a878135c8ee7e86ec9a5221604e71b2e2e9cd2ff623a7f10"
+        },
+        "after": {
+          "file": "aidar-short-gaps-after.flac",
+          "pcm_sha256": "c5a0f1423c996790a878135c8ee7e86ec9a5221604e71b2e2e9cd2ff623a7f10"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "foreign",
+      "speaker": "aidar",
+      "seconds": 3.6375,
+      "audio": {
+        "before": {
+          "file": "aidar-foreign-before.flac",
+          "pcm_sha256": "d139eee13ec8cdd769e94e5e9d02e4a34760640e4239ad2c2c54e665b18f5652"
+        },
+        "after": {
+          "file": "aidar-foreign-after.flac",
+          "pcm_sha256": "d139eee13ec8cdd769e94e5e9d02e4a34760640e4239ad2c2c54e665b18f5652"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "punctuation",
+      "speaker": "aidar",
+      "seconds": 5.2125,
+      "audio": {
+        "before": {
+          "file": "aidar-punctuation-before.flac",
+          "pcm_sha256": "21596188f761fb5079f35cecfd4a733313efebe020e8cf12631838c24e425b46"
+        },
+        "after": {
+          "file": "aidar-punctuation-after.flac",
+          "pcm_sha256": "21596188f761fb5079f35cecfd4a733313efebe020e8cf12631838c24e425b46"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "numbers",
+      "speaker": "aidar",
+      "seconds": 4.225,
+      "audio": {
+        "before": {
+          "file": "aidar-numbers-before.flac",
+          "pcm_sha256": "82cb785c940961771f965470593fe5ba83db725824900e9ae2eae027520fab34"
+        },
+        "after": {
+          "file": "aidar-numbers-after.flac",
+          "pcm_sha256": "82cb785c940961771f965470593fe5ba83db725824900e9ae2eae027520fab34"
+        }
+      },
+      "changed": false
+    },
+    {
+      "id": "paragraph",
+      "speaker": "aidar",
+      "seconds": 25.6,
+      "audio": {
+        "before": {
+          "file": "aidar-paragraph-before.flac",
+          "pcm_sha256": "67f6b5c91c331497bc815aa65e174906760a0850c14f39d363d16a133a437ba7"
+        },
+        "after": {
+          "file": "aidar-paragraph-after.flac",
+          "pcm_sha256": "67f6b5c91c331497bc815aa65e174906760a0850c14f39d363d16a133a437ba7"
+        }
+      },
+      "changed": false
+    }
+  ]
+}

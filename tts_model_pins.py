@@ -58,3 +58,12 @@ SILERO_CATALOG = {
     "sha256_digest": "64ccc436c72fd8c538e1a37de00301cc164a82c3d8ef0356532fe4c662ed1aa7",
     "url": "https://raw.githubusercontent.com/snakers4/silero-models/d9355348e2781dc8fa25a135d1602c530afae24c/models.yml"
 }
+
+
+# Piper catalog snapshot verified on 2026-10-11.
+PIPER_CATALOG = {
+    "revision": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
+    "sha256_digest": "b63d7a8663eb8bcf73d6545f1f7e4b49f9bcd2019e4fb6bd48e81642df183eed",
+    "size_bytes": 245852,
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/voices.json"
+}

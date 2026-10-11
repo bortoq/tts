@@ -35,10 +35,10 @@ class PCMCache:
         self.directory = cache_dir() / 'pcm'
         self.directory.mkdir(parents=True, exist_ok=True)
         self.limit = int(os.environ.get('TTS_PCM_CACHE_MB', '256')) * 1024 * 1024
-        with self.locked():
-            self.used = sum(p.stat().st_size for p in self.directory.glob('*.pcm'))
         if self.limit < 0:
             raise ValueError('TTS_PCM_CACHE_MB must not be negative.')
+        with self.locked():
+            self._trim()
 
     @contextmanager
     def locked(self):
@@ -51,6 +51,7 @@ class PCMCache:
 
     def get(self, key, *, with_processing=False):
         with self.locked():
+            self._trim()
             return self._get(key, with_processing=with_processing)
 
     def _access(self, key):
@@ -111,11 +112,18 @@ class PCMCache:
             metadata['processing'] = processing
         atomic_write(path.with_suffix('.json'), json.dumps(metadata).encode())
         self._access(key)
+        self._trim(exclude=path)
+
+    def _trim(self, exclude=None):
+        """Apply the current budget under the shared lock, including on reads."""
+        files = list(self.directory.glob('*.pcm'))
+        self.used = sum(p.stat().st_size for p in files)
         if self.used <= self.limit:
             return
         with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
+            index.execute('CREATE TABLE IF NOT EXISTS access (key TEXT PRIMARY KEY, sequence INTEGER)')
             order = dict(index.execute('SELECT key, sequence FROM access'))
-        files = sorted((p for p in self.directory.glob('*.pcm') if p != path),
+        files = sorted((p for p in files if p != exclude),
                        key=lambda p: (order.get(p.stem, 0), p.name))
         total = self.used
         for old in files:

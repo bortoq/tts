@@ -85,6 +85,41 @@ class SecurityTests(unittest.TestCase):
                     process.kill()
                     process.join()
 
+    def test_lower_budget_is_enforced_without_another_write(self):
+        cache = tts_state.PCMCache()
+        for key in ('old', 'recent'):
+            cache.put(key, b'\1\0' * 300000)
+        with patch.dict(os.environ, {'TTS_PCM_CACHE_MB':'1'}):
+            reduced = tts_state.PCMCache()
+        self.assertLessEqual(sum(p.stat().st_size for p in reduced.directory.glob('*.pcm')), reduced.limit)
+        self.assertIsNone(reduced.get('old'))
+        self.assertIsNotNone(reduced.get('recent'))
+        # A still-running writer with the former budget cannot defeat the
+        # smaller reader's budget on the reader's next access.
+        cache.put('new', b'\2\0' * 300000)
+        reduced.get('new')
+        self.assertLessEqual(sum(p.stat().st_size for p in reduced.directory.glob('*.pcm')), reduced.limit)
+        with patch.dict(os.environ, {'TTS_PCM_CACHE_MB':'0'}):
+            disabled = tts_state.PCMCache()
+        self.assertEqual(list(disabled.directory.glob('*.pcm')), [])
+
+    def test_default_piper_catalog_and_model_urls_are_immutable(self):
+        from tts_model_pins import PIPER_CATALOG
+        catalog = {'en_GB-sample-medium':{'name':'sample', 'gender':'female',
+                   'language':{'code':'en_GB'}, 'quality':'medium', 'num_speakers':1,
+                   'files':{'en/sample.onnx':{}, 'en/sample.onnx.json':{}}}}
+        def retrieve(url, path, *args, **kwargs):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(json.dumps(catalog).encode() if path.suffix == '.json' and 'voices' in path.name
+                             else b'model')
+            return path
+        with patch.object(tts_voices, 'local_piper_catalog', return_value=[]), \
+             patch.object(tts_voices, 'download', side_effect=retrieve) as download:
+            tts_voices.piper_voice('en-GB', 'female', 'unused')
+        self.assertEqual(download.call_args_list[0].kwargs['sha256'], PIPER_CATALOG['sha256_digest'])
+        self.assertTrue(all('/resolve/' + PIPER_CATALOG['revision'] + '/' in call.args[0]
+                            for call in download.call_args_list))
+
     def test_dtd_and_entities_rejected_in_plain_and_zipped_fb2(self):
         xml = b'<!DOCTYPE FictionBook [<!ENTITY a "hello">]><FictionBook><body><p>&a;</p></body></FictionBook>'
         for name in ('book.fb2', 'book.fb2.zip'):
