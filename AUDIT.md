@@ -280,3 +280,42 @@ including a forced real-model fallback and a second generation reproducing all
 recorded PCM hashes. Ruff, whitespace checks and sdist/wheel builds pass; the
 sdist includes the corpus and reproducer. Expert listening remains an explicitly
 open quality task, separate from the completed code and signal checks.
+
+## Audit of 2ba2d7c: cache performance
+
+The P2 cache-hit regression is fixed with shared SQLite byte accounting and an
+O(1) logical access counter, under the existing process lock. Normal reads and
+writes no longer enumerate all PCM files or calculate MAX(sequence) over all
+access entries. Lower-budget readers still enforce their limit on every read,
+including after writes from a larger-budget process. Initial migration,
+out-of-band atomic writes/deletions and interrupted writes reconcile the index
+using a directory timestamp. This also supports a running legacy writer that
+only knows the original access table. PCM hashes and metadata validation remain
+mandatory. In-place file changes without a directory timestamp change are not a
+supported way to manage cache capacity; the selected entry is still validated.
+SQLite connections now close explicitly on success and exceptions; persistent
+TRUNCATE journaling lets directory stamps remain stable across ordinary commits.
+
+`benchmark_cache.py` creates synthetic valid PCM/JSON pairs in a temporary cache
+and measures initialization and sequential checked hits. On the local filesystem,
+4000 entries / 1000 reads took 24.551 s for 2ba2d7c and 2.305 s after this change
+(10.65x). With the new accounting, 1000/4000/8000 entries took 2.355/2.305/2.310 s
+for 1000 hits: no growth proportional to the number of entries. Initialization
+still scans once (0.043 s for 4000 entries), and external legacy mutations trigger
+another reconciliation. These tiny synthetic entries measure index/filesystem
+cost, not synthesis speed or disk-independent real-book performance. Reproduce:
+
+```bash
+git show 2ba2d7c:tts_state.py > /tmp/tts-state-baseline.py
+python3 benchmark_cache.py --state-module /tmp/tts-state-baseline.py
+python3 benchmark_cache.py
+```
+
+Regression tests cover scan-free shared hits/writes, interruption recovery,
+legacy writer detection with a lower-budget reader, overwrite/deletion accounting
+and explicit SQLite closure. Manual acoustic review remains pending; this cache
+optimization changes neither synthesis nor the audio corpus.
+
+Validation: all 129 offline tests pass, including native mpv and available engine
+checks; Ruff and whitespace checks pass. The cache benchmark covers 1000, 4000
+and 8000 entries. Model corpus audio is unchanged.

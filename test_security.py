@@ -76,7 +76,7 @@ class SecurityTests(unittest.TestCase):
             files = list((self.root / 'cache/pcm').glob('*.pcm'))
             self.assertEqual(len(files), 1)
             import sqlite3
-            with sqlite3.connect(self.root / 'cache/pcm/lru.sqlite3') as index:
+            with contextlib.closing(sqlite3.connect(self.root / 'cache/pcm/lru.sqlite3')) as index:
                 newest = index.execute('SELECT key FROM access ORDER BY sequence DESC LIMIT 1').fetchone()[0]
             self.assertEqual(files[0].stem, newest)
         finally:

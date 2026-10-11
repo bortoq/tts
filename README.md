@@ -71,7 +71,10 @@ Generated PCM is cached under `TTS_CACHE_DIR/pcm`, with a default limit of 256 M
 Keys include text, language, voice, model fingerprint, and PCM format. LRU order
 is stored in a locked SQLite index and does not depend on filesystem timestamps.
 Reducing the cache budget trims existing PCM immediately at initialization and
-on reads; setting it to zero removes existing PCM and disables new cache writes. Cached data
+on reads; setting it to zero removes existing PCM and disables new cache writes.
+Shared SQLite byte accounting makes ordinary cache hits independent of the number
+of entries. Directory timestamps trigger reconciliation after legacy writers or
+interrupted writes; normal reads and writes do not enumerate PCM files. Cached data
 has a size and checksum; corrupt entries are regenerated. Online speech remains
 available until size-based cache eviction. RHVoice uses complete-book cache
 manifests when the blocks needed from the saved position remain available;

@@ -37,8 +37,8 @@ class PCMCache:
         self.limit = int(os.environ.get('TTS_PCM_CACHE_MB', '256')) * 1024 * 1024
         if self.limit < 0:
             raise ValueError('TTS_PCM_CACHE_MB must not be negative.')
-        with self.locked():
-            self._trim()
+        with self.locked(), self._index() as index:
+            self._trim(index)
 
     @contextmanager
     def locked(self):
@@ -49,25 +49,63 @@ class PCMCache:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
+    @contextmanager
+    def _index(self):
+        # TRUNCATE keeps the journal name stable: commits must not change the
+        # directory timestamp used to detect legacy writers and interrupted I/O.
+        index = sqlite3.connect(self.directory / 'lru.sqlite3')
+        try:
+            index.execute('PRAGMA journal_mode=TRUNCATE')
+            with index:
+                index.execute('CREATE TABLE IF NOT EXISTS access (key TEXT PRIMARY KEY, sequence INTEGER)')
+                index.execute('CREATE TABLE IF NOT EXISTS sizes (key TEXT PRIMARY KEY, bytes INTEGER)')
+                index.execute('CREATE TABLE IF NOT EXISTS accounting '
+                              '(id INTEGER PRIMARY KEY, used INTEGER, sequence INTEGER, stamp TEXT)')
+                # Also creates the persistent journal before recording a stamp.
+                index.execute('INSERT OR IGNORE INTO accounting VALUES (1, 0, 0, NULL)')
+                used, sequence, stamp = index.execute(
+                    'SELECT used, sequence, stamp FROM accounting WHERE id=1').fetchone()
+                self.used = used
+                if stamp != self._stamp():
+                    self._reconcile(index)
+                yield index
+                index.execute('UPDATE accounting SET used=?, stamp=? WHERE id=1',
+                              (self.used, self._stamp()))
+        finally:
+            index.close()
+
+    def _stamp(self):
+        stat = self.directory.stat()
+        return f'{stat.st_mtime_ns}:{stat.st_ctime_ns}'
+
+    def _reconcile(self, index):
+        """Scan only after out-of-band directory changes or an interrupted write."""
+        files = [(p.stem, p.stat().st_size) for p in self.directory.glob('*.pcm')]
+        index.execute('DELETE FROM sizes')
+        index.executemany('INSERT INTO sizes VALUES (?, ?)', files)
+        index.execute('DELETE FROM access WHERE key NOT IN (SELECT key FROM sizes)')
+        index.execute('UPDATE accounting SET sequence=MAX(sequence, '
+                      '(SELECT COALESCE(MAX(sequence), 0) FROM access)) WHERE id=1')
+        self.used = sum(size for _, size in files)
+
     def get(self, key, *, with_processing=False):
-        with self.locked():
-            self._trim()
-            return self._get(key, with_processing=with_processing)
+        with self.locked(), self._index() as index:
+            self._trim(index)
+            return self._get(key, index, with_processing=with_processing)
 
-    def _access(self, key):
-        # The file lock also serializes this logical clock across cache instances.
-        # Filesystem timestamp resolution must not determine LRU ordering.
-        with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
-            index.execute('CREATE TABLE IF NOT EXISTS access (key TEXT PRIMARY KEY, sequence INTEGER)')
-            index.execute('INSERT OR REPLACE INTO access VALUES (?, '
-                          '(SELECT COALESCE(MAX(sequence), 0) + 1 FROM access))', (key,))
+    def _access(self, key, index):
+        index.execute('UPDATE accounting SET sequence=sequence+1 WHERE id=1')
+        index.execute('INSERT OR REPLACE INTO access VALUES (?, '
+                      '(SELECT sequence FROM accounting WHERE id=1))', (key,))
 
-    def _forget(self, key):
-        if (self.directory / 'lru.sqlite3').exists():
-            with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
-                index.execute('DELETE FROM access WHERE key = ?', (key,))
+    def _forget(self, key, index):
+        row = index.execute('SELECT bytes FROM sizes WHERE key=?', (key,)).fetchone()
+        if row:
+            self.used -= row[0]
+        index.execute('DELETE FROM sizes WHERE key=?', (key,))
+        index.execute('DELETE FROM access WHERE key=?', (key,))
 
-    def _get(self, key, *, with_processing=False):
+    def _get(self, key, index, *, with_processing=False):
         path = self.directory / (key + '.pcm')
         try:
             metadata = json.loads(path.with_suffix('.json').read_text())
@@ -83,20 +121,19 @@ class PCMCache:
                 expected['processing'] = metadata['processing']
             if not data or len(data) % 2 or metadata != expected:
                 raise ValueError('Invalid cached PCM')
-            self._access(key)
+            self._access(key, index)
             return (data, metadata.get('processing')) if with_processing else data
         except (OSError, ValueError):
             path.unlink(missing_ok=True)
             path.with_suffix('.json').unlink(missing_ok=True)
-            self._forget(key)
+            self._forget(key, index)
             return (None, None) if with_processing else None
 
     def put(self, key, data, *, processing=None):
-        with self.locked():
-            self.used = sum(p.stat().st_size for p in self.directory.glob("*.pcm"))
-            return self._put(key, data, processing=processing)
+        with self.locked(), self._index() as index:
+            return self._put(key, data, index, processing=processing)
 
-    def _put(self, key, data, *, processing=None):
+    def _put(self, key, data, index, *, processing=None):
         if not data or len(data) % 2:
             raise ValueError('PCM must contain complete 16-bit samples.')
         if not self.limit or len(data) > self.limit:
@@ -104,36 +141,33 @@ class PCMCache:
         if len(data) > byte_limit('TTS_MAX_PCM_BYTES', 180 * BYTES_PER_SECOND):
             return
         path = self.directory / (key + '.pcm')
-        previous = path.stat().st_size if path.exists() else 0
+        row = index.execute('SELECT bytes FROM sizes WHERE key=?', (key,)).fetchone()
+        previous = row[0] if row else 0
         atomic_write(path, data)
-        self.used += len(data) - previous
         metadata = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
         if processing is not None:
             metadata['processing'] = processing
         atomic_write(path.with_suffix('.json'), json.dumps(metadata).encode())
-        self._access(key)
-        self._trim(exclude=path)
+        index.execute('INSERT OR REPLACE INTO sizes VALUES (?, ?)', (key, len(data)))
+        self.used += len(data) - previous
+        self._access(key, index)
+        self._trim(index, exclude=key)
 
-    def _trim(self, exclude=None):
-        """Apply the current budget under the shared lock, including on reads."""
-        files = list(self.directory.glob('*.pcm'))
-        self.used = sum(p.stat().st_size for p in files)
+    def _trim(self, index, exclude=None):
+        """Apply this client's budget using shared accounting, including on reads."""
         if self.used <= self.limit:
             return
-        with sqlite3.connect(self.directory / 'lru.sqlite3') as index:
-            index.execute('CREATE TABLE IF NOT EXISTS access (key TEXT PRIMARY KEY, sequence INTEGER)')
-            order = dict(index.execute('SELECT key, sequence FROM access'))
-        files = sorted((p for p in files if p != exclude),
-                       key=lambda p: (order.get(p.stem, 0), p.name))
-        total = self.used
-        for old in files:
-            if total <= self.limit * 0.9:
+        files = index.execute(
+            'SELECT sizes.key, sizes.bytes FROM sizes LEFT JOIN access USING (key) '
+            'WHERE sizes.key != ? ORDER BY COALESCE(sequence, 0), sizes.key',
+            (exclude or '',)).fetchall()
+        for key, size in files:
+            if self.used <= self.limit * 0.9:
                 break
-            total -= old.stat().st_size
-            old.unlink(missing_ok=True)
-            old.with_suffix('.json').unlink(missing_ok=True)
-            self._forget(old.stem)
-        self.used = total
+            path = self.directory / (key + '.pcm')
+            path.unlink(missing_ok=True)
+            path.with_suffix('.json').unlink(missing_ok=True)
+            self._forget(key, index)
 
 
 class Bookmark:

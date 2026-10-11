@@ -1,2 +1,3 @@
+include benchmark_cache.py
 include silero_regression.py
 recursive-include testdata/silero *.json *.md *.flac
