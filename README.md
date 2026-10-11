@@ -74,7 +74,9 @@ Reducing the cache budget trims existing PCM immediately at initialization and
 on reads; setting it to zero removes existing PCM and disables new cache writes.
 Shared SQLite byte accounting makes ordinary cache hits independent of the number
 of entries. Directory timestamps trigger reconciliation after legacy writers or
-interrupted writes; normal reads and writes do not enumerate PCM files. Cached data
+interrupted writes; normal reads and writes do not enumerate PCM files. SQLite
+triggers synchronize the LRU counter when an older reader updates only the access
+table, preserving eviction order across application versions. Cached data
 has a size and checksum; corrupt entries are regenerated. Online speech remains
 available until size-based cache eviction. RHVoice uses complete-book cache
 manifests when the blocks needed from the saved position remain available;

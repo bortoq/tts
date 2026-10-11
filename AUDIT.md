@@ -319,3 +319,30 @@ optimization changes neither synthesis nor the audio corpus.
 Validation: all 129 offline tests pass, including native mpv and available engine
 checks; Ruff and whitespace checks pass. The cache benchmark covers 1000, 4000
 and 8000 entries. Model corpus audio is unchanged.
+
+## Audit of d5f4cd2: mixed-version LRU
+
+The P3 mixed-version ordering defect is fixed. INSERT/REPLACE and sequence UPDATE
+on the original access table advance accounting.sequence via transactional
+SQLite triggers, including when a legacy read does not change the directory stamp.
+The new process then allocates a strictly newer access sequence. On each cache
+instance's first opening, the counter also catches up with existing access rows,
+covering legacy reads made before the triggers were installed. Ordinary hits do
+not scan PCM files or compute MAX(access.sequence).
+
+New regression tests reproduce legacy MAX+1 reads followed by a new read and
+eviction under stable directory timestamps, check trigger rollback and direct
+sequence updates, and cover upgrading a database with an already stale counter.
+The stable-timestamp regression fails against d5f4cd2 and passes after the fix.
+A separate local check loaded the actual 2ba2d7c class alongside the current class:
+a/b entries, old read of b, new read of a, new write of c correctly evicts b.
+The timestamp-stable unit case explicitly uses TRUNCATE journaling so the result
+is independent of the filesystem's behavior for legacy DELETE journals.
+
+The local synthetic 4000-entry / 1000-hit benchmark takes 2.268 s with triggers
+(previous revision measured 2.305 s); this shows no measurable regression in that
+run, not a guarantee of a further speedup. Audio synthesis and corpus recordings
+are unchanged. Manual acoustic review remains open.
+
+Validation: 132 offline tests pass; Ruff, whitespace checks and isolated
+sdist/wheel builds pass.

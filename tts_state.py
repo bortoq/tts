@@ -37,6 +37,7 @@ class PCMCache:
         self.limit = int(os.environ.get('TTS_PCM_CACHE_MB', '256')) * 1024 * 1024
         if self.limit < 0:
             raise ValueError('TTS_PCM_CACHE_MB must not be negative.')
+        self._sequence_triggers_ready = False
         with self.locked(), self._index() as index:
             self._trim(index)
 
@@ -63,6 +64,22 @@ class PCMCache:
                               '(id INTEGER PRIMARY KEY, used INTEGER, sequence INTEGER, stamp TEXT)')
                 # Also creates the persistent journal before recording a stamp.
                 index.execute('INSERT OR IGNORE INTO accounting VALUES (1, 0, 0, NULL)')
+                if not self._sequence_triggers_ready:
+                    # Legacy readers only update access. Track their sequence in
+                    # the same transaction without relying on directory changes or
+                    # scanning MAX(access.sequence) on ordinary cache hits.
+                    index.execute('CREATE TRIGGER IF NOT EXISTS access_sequence_insert '
+                                  'AFTER INSERT ON access '
+                                  'WHEN NEW.sequence > (SELECT sequence FROM accounting WHERE id=1) '
+                                  'BEGIN UPDATE accounting SET sequence=NEW.sequence WHERE id=1; END')
+                    index.execute('CREATE TRIGGER IF NOT EXISTS access_sequence_update '
+                                  'AFTER UPDATE OF sequence ON access '
+                                  'WHEN NEW.sequence > (SELECT sequence FROM accounting WHERE id=1) '
+                                  'BEGIN UPDATE accounting SET sequence=NEW.sequence WHERE id=1; END')
+                    # Upgrade may find legacy accesses already ahead of the
+                    # stored counter, even with an unchanged directory stamp.
+                    index.execute('UPDATE accounting SET sequence=MAX(sequence, '
+                                  '(SELECT COALESCE(MAX(sequence), 0) FROM access)) WHERE id=1')
                 used, sequence, stamp = index.execute(
                     'SELECT used, sequence, stamp FROM accounting WHERE id=1').fetchone()
                 self.used = used
@@ -71,6 +88,7 @@ class PCMCache:
                 yield index
                 index.execute('UPDATE accounting SET used=?, stamp=? WHERE id=1',
                               (self.used, self._stamp()))
+            self._sequence_triggers_ready = True
         finally:
             index.close()
 

@@ -1,4 +1,5 @@
 """Shared cache accounting, legacy interoperability and recovery regressions."""
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -66,6 +67,70 @@ class CacheAccountingTests(unittest.TestCase):
         reader.put('new', b'\3\0' * 300000)
         self.assertIsNone(reader.get('legacy'))
         self.assertIsNotNone(reader.get('new'))
+
+    def test_legacy_reads_preserve_lru_without_directory_changes(self):
+        with patch.dict(os.environ, {'TTS_PCM_CACHE_MB': '1'}):
+            cache = PCMCache()
+        data = b'\1\0' * 200000
+        cache.put('a', data)
+        cache.put('b', data)
+        stamp = cache._stamp()
+        with patch.object(PCMCache, '_reconcile', side_effect=AssertionError('Unexpected scan')):
+            # This is 2ba2d7c's read/access transaction: it knows only access,
+            # uses MAX+1, and replaces the previously read key's sequence.
+            for _ in range(10):
+                with cache.locked(), closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+                    # Hold journal names stable to exercise the audited case
+                    # independently of filesystem/SQLite DELETE-journal behavior.
+                    index.execute('PRAGMA journal_mode=TRUNCATE')
+                    self.assertEqual((cache.directory / 'b.pcm').read_bytes(), data)
+                    with index:
+                        index.execute('INSERT OR REPLACE INTO access VALUES (?, '
+                                      '(SELECT COALESCE(MAX(sequence), 0) + 1 FROM access))', ('b',))
+            self.assertEqual(cache._stamp(), stamp)
+            self.assertEqual(cache.get('a'), data)
+            with closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+                order = dict(index.execute('SELECT key, sequence FROM access'))
+            self.assertGreater(order['a'], order['b'])
+            cache.put('c', data)
+            self.assertIsNone(cache.get('b'))
+            self.assertEqual(cache.get('a'), data)
+            self.assertEqual(cache.get('c'), data)
+
+    def test_legacy_sequence_updates_advance_counter_and_rollback_atomically(self):
+        cache = PCMCache()
+        cache.put('a', b'\1\0')
+        with cache.locked(), closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+            with index:
+                index.execute('UPDATE access SET sequence=100 WHERE key=?', ('a',))
+            self.assertEqual(index.execute('SELECT sequence FROM accounting').fetchone()[0], 100)
+            try:
+                with index:
+                    index.execute('UPDATE access SET sequence=1000 WHERE key=?', ('a',))
+                    raise ValueError('Rollback')
+            except ValueError:
+                pass
+            self.assertEqual(index.execute('SELECT sequence FROM accounting').fetchone()[0], 100)
+        self.assertIsNotNone(cache.get('a'))
+        with closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+            self.assertEqual(index.execute('SELECT sequence FROM access WHERE key=?', ('a',)).fetchone()[0], 101)
+
+    def test_upgrade_synchronizes_legacy_reads_before_trigger_installation(self):
+        cache = PCMCache()
+        cache.put('a', b'\1\0')
+        with cache.locked(), closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+            index.execute('PRAGMA journal_mode=TRUNCATE')
+            with index:
+                index.execute('DROP TRIGGER access_sequence_insert')
+                index.execute('DROP TRIGGER access_sequence_update')
+                index.execute('UPDATE access SET sequence=100 WHERE key=?', ('a',))
+            self.assertEqual(index.execute('SELECT sequence FROM accounting').fetchone()[0], 1)
+        stamp = cache._stamp()
+        upgraded = PCMCache()
+        self.assertEqual(upgraded._stamp(), stamp)
+        self.assertIsNotNone(upgraded.get('a'))
+        with closing(sqlite3.connect(cache.directory / 'lru.sqlite3')) as index:
+            self.assertEqual(index.execute('SELECT sequence FROM access WHERE key=?', ('a',)).fetchone()[0], 101)
 
     def test_sqlite_connections_close_on_success_and_failure(self):
         connections = []
