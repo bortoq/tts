@@ -122,8 +122,12 @@ substitutes a Russian voice or switches engines to hide a missing language.
 - **Silero:** selects models for English, German, Spanish, French, Ukrainian, Uzbek,
   Russian, Indic languages, and the languages in the Cyrillic model. It also reads
   the upstream index for further language models. Models download once. English
-  defaults to the English Indic model, whose voices have an Indian accent. Indic
-  input is romanized using `aksharamukha` before synthesis.
+  defaults to the standard `v3_en` model (`en_0`), rather than English Indic voices.
+  English, Spanish and French indexed speakers lack published gender metadata;
+  selection warns about this, or fails with `TTS_STRICT_GENDER=1`. Regional English
+  accents are not mapped; select a verified voice override for a specific accent.
+  Indic input is romanized using `aksharamukha` before synthesis.
+  See [the checked language/voice table](SILERO_LANGUAGE_AUDIT.md).
 - **Piper:** reads language metadata from local ONNX configs. When a suitable model
   is missing, it selects and downloads one from the upstream catalog. Single and
   multi-speaker models are supported. Downloads check the supplied size and hash.
@@ -210,7 +214,9 @@ cached audio. Old entries exceeding a lowered limit are discarded and regenerate
 new oversized entries are not cached. RHVoice streams complete books in one-second
 blocks instead of retaining a whole decoded book in memory.
 
-Voice overrides add languages, verified genders, or private models:
+Voice overrides add languages, verified genders, or private models. An English
+override pins a chosen speaker but does not establish its gender; verify it before
+using strict gender mode:
 
 ```json
 {
@@ -221,10 +227,10 @@ Voice overrides add languages, verified genders, or private models:
   },
   "silero": {
     "en": {"female": {
-      "model": "v3_en_indic",
-      "speaker": "tamil_female",
-      "url": "https://models.silero.ai/models/tts/en/v3_en_indic.pt",
-      "sha256_digest": "8ebf6b8bc4a762117e5f8d9a6ba30ffcbb65eb669f57cecd6954b0f563095429",
+      "model": "v3_en",
+      "speaker": "en_0",
+      "url": "https://models.silero.ai/models/tts/en/v3_en.pt",
+      "sha256_digest": "02b71034d9f13bc4001195017bac9db1c6bb6115e03fea52983e8abcff13b665",
       "sample_rate": 24000
     }}
   }

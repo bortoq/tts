@@ -6,6 +6,12 @@ requires reviewing the upstream package code and fingerprinting new bytes.
 """
 
 SILERO_PINS = {
+    # Standard English package reviewed and fingerprinted on 2026-10-11.
+    "v3_en": {
+        "sha256_digest": "02b71034d9f13bc4001195017bac9db1c6bb6115e03fea52983e8abcff13b665",
+        "size_bytes": 57194546,
+        "url": "https://models.silero.ai/models/tts/en/v3_en.pt"
+    },
     "v3_de": {
         "sha256_digest": "2e22f38619e1d1da96d963bda5fab6d53843e8837438cb5a45dc376882b0354b",
         "size_bytes": 57076082,

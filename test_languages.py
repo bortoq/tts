@@ -122,9 +122,45 @@ class LanguageTests(unittest.TestCase):
                     spec = tts_voices.silero_voice(language, gender)
                     self.assertEqual(spec["speaker"], speaker)
                     self.assertEqual(spec["url"], f"https://models.silero.ai/models/tts/{folder}/{model}.pt")
-        self.assertEqual(tts_voices.silero_voice("en-US", "female")["speaker"], "tamil_female")
+        self.assertEqual(tts_voices.silero_voice("en-US", "female")["speaker"], "en_0")
         self.assertEqual(tts_voices.silero_voice("uk", "male")["speaker"], "mykyta")
         self.assertEqual(tts_voices.silero_voice("hi", "female")["script"], "Devanagari")
+
+    def test_english_uses_standard_model_and_reports_unknown_gender(self):
+        for language in ('en', 'eng', 'en-US', 'en-GB', 'en-IN'):
+            for mode in (5, 6):
+                with self.subTest(language=language, mode=mode), \
+                     patch.object(engines, 'load_silero', return_value=MagicMock()), \
+                     contextlib.redirect_stderr(io.StringIO()) as warning:
+                    synth = engines.Synthesizer(mode, language)
+                    self.assertEqual(synth.spec['model'], 'v3_en')
+                    self.assertEqual(synth.voice, 'en_0')
+                    self.assertIn('gender cannot be guaranteed', warning.getvalue())
+        with patch.dict(os.environ, {'TTS_STRICT_GENDER':'1'}):
+            with self.assertRaises(ValueError):
+                tts_voices.silero_voice('en', 'female')
+
+    def test_silero_routes_match_verified_model_speakers_and_upstream_genders(self):
+        fixture = json.loads((Path(__file__).parent / 'testdata/silero/routing.json').read_text())
+        for language, (_, model, speakers) in tts_voices.SILERO.items():
+            with self.subTest(language=language):
+                self.assertEqual(tts_voices.SILERO_PINS[model]['sha256_digest'],
+                                 fixture['models'][model]['sha256'])
+                for gender, speaker in speakers.items():
+                    self.assertIn(speaker, fixture['models'][model]['speakers'])
+                    if model == 'v4_cyrillic':
+                        self.assertEqual(gender, fixture['cyrillic_genders'][speaker])
+                if language in tts_voices.INDIC:
+                    for gender, speaker in speakers.items():
+                        self.assertTrue(speaker.endswith('_' + gender))
+
+    def test_cyrillic_genders_and_rajasthani_male(self):
+        for language, speaker in (('kjh','b_kjh'), ('mhr','b_mhr'), ('nog','b_nog')):
+            with self.subTest(language=language):
+                self.assertEqual(tts_voices.silero_voice(language, 'female')['speaker'], speaker)
+                with self.assertRaises(ValueError):
+                    tts_voices.silero_voice(language, 'male')
+        self.assertEqual(tts_voices.silero_voice('raj', 'male')['speaker'], 'rajasthani_male')
 
     def test_silero_uses_the_selected_non_russian_model(self):
         with patch.object(engines, "load_silero", return_value=MagicMock()) as load:

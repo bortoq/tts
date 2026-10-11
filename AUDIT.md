@@ -346,3 +346,31 @@ are unchanged. Manual acoustic review remains open.
 
 Validation: 132 offline tests pass; Ruff, whitespace checks and isolated
 sdist/wheel builds pass.
+
+## English accent and all bundled Silero routes
+
+English FB2 metadata was correct (`en`) for the reported Revival archive. The
+built-in route incorrectly preferred `v3_en_indic` / tamil voices for every
+English locale. It now uses the standard upstream `v3_en` / `en_0` package,
+reviewed and pinned at 57194546 bytes / SHA256
+`02b71034d9f13bc4001195017bac9db1c6bb6115e03fea52983e8abcff13b665`.
+Indexed English speakers have no published gender labels; the existing warning
+and strict-gender rejection apply, just as for French and Spanish. Regional
+English accents are not guessed. Explicit user overrides remain authoritative.
+
+The rest of the built-in routes were checked against the pinned upstream README
+and real package speaker lists. The gender labels for b_kjh, b_mhr and
+b_nog match upstream female metadata and now have dedicated regression coverage. The real Indic package also exposes
+rajasthani_male, omitted by an upstream README typo; that route is now supported.
+See SILERO_LANGUAGE_AUDIT.md and testdata/silero/routing.json for the checked table
+and independently sourced Cyrillic gender metadata / package speaker snapshots.
+
+The real-model reproducer silero_routing_regression.py passes all 49 selected
+speaker routes / 36 languages / 9 packages, including Indic script conversion,
+and emits WAV/JSON. Package processes are isolated to release model memory.
+Cyrillic routes use a shared token probe rather than a fluency assessment; no
+listening by native speakers is claimed. CI's latest-PyTorch model job also runs
+this routing check and includes recordings in its existing artifact.
+135 unit/integration tests pass; Ruff and whitespace checks pass. The original
+Russian pause regression and corpus remain unchanged. New English model/voice
+identity prevents replaying old Indic PCM and resets the voice-specific bookmark.

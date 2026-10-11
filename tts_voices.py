@@ -216,7 +216,7 @@ def rhvoice_catalog():
 # Unlabelled indexed voices remain gender=None rather than guessed from names.
 SILERO = {
     "ru": ("ru", "v4_ru", {"female":"xenia", "male":"aidar"}),
-    "en": ("en", "v3_en_indic", {"female":"tamil_female", "male":"tamil_male"}),
+    "en": ("en", "v3_en", {None:"en_0"}),
     "de": ("de", "v3_de", {"female":"eva_k", "male":"karlsson"}),
     "es": ("es", "v3_es", {None:"es_0"}),
     "fr": ("fr", "v3_fr", {None:"fr_0"}),
@@ -239,7 +239,7 @@ INDIC = {"hi":("hindi", "Devanagari"), "ml":("malayalam", "Malayalam"),
          "raj":("rajasthani", "Devanagari"), "ta":("tamil", "Tamil"),
          "te":("telugu", "Telugu"), "gu":("gujarati", "Gujarati"), "kn":("kannada", "Kannada")}
 for code, (name, script) in INDIC.items():
-    genders = ("female",) if code in ("mni", "raj") else ("female", "male")
+    genders = ("female",) if code == "mni" else ("female", "male")
     SILERO[code] = ("indic", "v4_indic", {gender: f"{name}_{gender}" for gender in genders})
 
 

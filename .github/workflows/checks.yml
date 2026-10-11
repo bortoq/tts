@@ -85,6 +85,12 @@ jobs:
       - run: python -m pip install ".[silero]"
       - name: Real model, diverse texts and reference equivalence
         run: python silero_regression.py --output /tmp/silero-corpus
+      - name: Install Indic transliteration for routing checks
+        if: matrix.torch == 'latest'
+        run: python -m pip install ".[indic]"
+      - name: All bundled language and speaker routes with real models
+        if: matrix.torch == 'latest'
+        run: python silero_routing_regression.py --output /tmp/silero-corpus/routing
       - uses: actions/upload-artifact@v4
         if: always()
         with:
